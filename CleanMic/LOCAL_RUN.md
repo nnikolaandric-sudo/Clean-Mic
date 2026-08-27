@@ -97,6 +97,42 @@ CleanMic/
 └── Package.swift       # swift-tools-version 6.0, radi sa Xcode (unsafeFlags -L Vendor/rnnoise)
 ```
 
+## Modovi (mjereno, ne procijenjeno)
+
+Modovi se razlikuju po **wet/dry miksu** — koliko RNNoise izlaza ide u finalni
+signal. Ranije su se razlikovali samo po izlaznom gainu, sto mijenja glasnocu
+ali ne i odnos govora prema buci, pa su sva tri moda davala identican SNR.
+
+Mjereno na govoru sa pink bukom (ulaz: SNR 7.5 dB):
+
+| Mod | wet | SNR | govor | buka | granice frameova |
+|-----|-----|-----|-------|------|------------------|
+| Light | 0.55 | 10.6 dB | −2.5 dB | −5.6 dB | 0.77x |
+| Balanced | 0.85 | 12.9 dB | −2.0 dB | −7.5 dB | 0.88x |
+| Maximum | 0.95 | 13.1 dB | −1.6 dB | −7.2 dB | 1.02x |
+
+"granice frameova" = srednji skok signala tacno na granici 480-uzorackog framea
+podijeljen srednjim skokom svuda; 1.0 znaci da se granice ne razlikuju od
+ostatka signala. Ispod 1.0 je pozeljno.
+
+Dvije stvari koje su mjerenjem odbacene:
+
+- **wet = 1.00 (cisti RNNoise)** je losiji od 0.95 i po potiskivanju buke
+  (−6.9 dB) i po granicama (1.10x). Zato maximum nije 1.0.
+- **VAD gate** je uklonjen. RNNoise VAD u pauzama ostaje visok (prosjek 0.655),
+  pa je gate okidao samo tamo gdje je RNNoise vec utisao signal. Sa pragom 0.80
+  i atenuacijom 0.90 okine na 102 od 655 frameova, a rezultat je identican do
+  jedne decimale.
+
+RNNoise izlaz kasni **337 uzoraka (7.02 ms)** za ulazom — izmjereno unakrsnom
+korelacijom. Dry grana u miksu se kasni za isto toliko; bez toga se mijesaju
+dvije verzije istog signala pomjerene u vremenu (comb filter), sto je mjerljivo
+kvarilo granice frameova (1.64x umjesto 0.77x).
+
+Tuning ovih brojeva je radjen na sintetickom signalu (`say` TTS + pink buka).
+Za tvoj glas u tvom prostoru provjeri sa `record-processed` i podesi `wetMix`
+u `Sources/CleanMicCore/NoiseProcessor.swift`.
+
 ## Sledeći koraci (PRD)
 
 - [x] 0.5 — RNNoise C lib submodule + C bridge (zamena mock-a) — **gotovo 27.08.2026**

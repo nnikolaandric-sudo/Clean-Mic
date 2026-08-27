@@ -10,7 +10,7 @@ func printUsage() {
       cleanmic-cli list                          — lista input uređaja
       cleanmic-cli record [sec] [out.wav]        — snimi raw mic -> WAV (default 5s)
       cleanmic-cli record-processed [sec] [out.wav] --mode light|balanced|maximum
-                                                 — snimi mic -> RNNoise(mock) -> WAV
+                                             — snimi mic -> RNNoise -> WAV
       cleanmic-cli process <in.wav> <out.wav> [--mode MODE]
                                                  — offline WAV -> WAV kroz NoiseProcessor
       cleanmic-cli test-rings                    — stress test RingBuffer

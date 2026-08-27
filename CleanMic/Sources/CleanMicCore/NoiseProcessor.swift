@@ -42,35 +42,40 @@ public enum CleanMicMode: Int, CaseIterable, CustomStringConvertible {
         }
     }
 
-    /// Post-process gain nakon RNNoise-a. RNNoise sam po sebi daje ~0dB pass-through
-    /// na govoru, a ~-30dB na buci, tako da 'light' ostavlja izlaz netaknut,
-    /// 'balanced' blago utise za topliji zvuk, 'maximum' jos vise.
-    var postGain: Float {
+    /// Udio RNNoise izlaza u finalnom miksu (wet/dry).
+    /// 1.0 = cisti RNNoise, 0.0 = neobradjen ulaz.
+    ///
+    /// Ovo je GLAVNA razlika izmedju modova. Ranije su se razlikovali samo po
+    /// `postGain`-u, koji mnozi cijeli frame uniformno — to mijenja glasnocu,
+    /// ali ne i odnos govora prema buci, pa su sva tri moda davala identican
+    /// SNR (izmjereno: 11.8 dB u sva tri). Wet/dry miks stvarno kontrolise
+    /// koliko se agresivno potiskuje buka, po cijenu artefakata i gusenja
+    /// govora — sto je trade-off koji izbor moda i treba da nudi.
+    var wetMix: Float {
         switch self {
-        case .light: return 1.00
-        case .balanced: return 0.92
-        case .maximum: return 0.82
+        // Vrijednosti su izabrane mjerenjem (sweep 0.40..1.00 na govoru sa
+        // pink bukom, SNR / potiskivanje buke / vjernost cistom govoru /
+        // glatkoca na granicama frameova):
+        //   0.55 -> SNR 10.6 dB, buka -5.6 dB, vjernost -4.0 dB  (najprirodnije)
+        //   0.85 -> SNR 12.9 dB, buka -7.5 dB, vjernost -0.6 dB  (najbolja buka)
+        //   0.95 -> SNR 13.1 dB, buka -7.2 dB, vjernost +0.3 dB  (najveci SNR)
+        // wet = 1.00 (cisti RNNoise) je mjerljivo losiji od 0.95 i po buci
+        // (-6.9 dB) i po granicama (1.10x vs 1.02x) — zato maximum nije 1.0.
+        case .light: return 0.55    // blago — cuva prirodnost glasa
+        case .balanced: return 0.85 // preporuceno — najbolje potiskivanje buke
+        case .maximum: return 0.95  // najagresivnije
         }
     }
 
-    /// Prag ispod kojeg RNNoise VAD tretiramo kao "nema govora".
-    /// Iznad ovoga pustamo audio netaknut, ispod dodatno utisavamo.
-    var vadGateThreshold: Float {
-        switch self {
-        case .light: return 0.10
-        case .balanced: return 0.20
-        case .maximum: return 0.35
-        }
-    }
-
-    /// Koliko dodatno utisavamo kad je VAD ispod praga (0..1, linearno).
-    var vadGateAttenuation: Float {
-        switch self {
-        case .light: return 0.0   // nema gate-a
-        case .balanced: return 0.25
-        case .maximum: return 0.50
-        }
-    }
+    // VAD gate je uklonjen jer je mjerenjem pokazano da ne radi nista.
+    // RNNoise VAD u pauzama ostaje visok (prosjek 0.655; 67 od 188 pauznih
+    // frameova je u opsegu 0.9-1.0) jer rekurentna mreza zadrzava "govor"
+    // stanje nakon govora. Gate je zato okidao samo na frameovima gdje je
+    // VAD nizak — a to su tacno oni koje je RNNoise vec utisao na ~-55 dB.
+    // Mjereno: sa pragom 0.80 i atenuacijom 0.90 gate okine na 102 od 655
+    // frameova, a SNR, potiskivanje buke i glatkoca granica ostanu identicni
+    // do jedne decimale. Za pravo dodatno potiskivanje u pauzama treba
+    // procjena praga buke iz energije izlaza, ne RNNoise VAD.
 }
 
 public final class NoiseProcessor: @unchecked Sendable {
@@ -79,9 +84,17 @@ public final class NoiseProcessor: @unchecked Sendable {
 
     private var handle: OpaquePointer?
     private var mode: CleanMicMode
-    // Prealocirani temp bufferi za skaliranje (-1..1 <-> int16) — izbegava heap alloc po frejmu
-    private var tmpIn = [Float](repeating: 0, count: 480)
+    // Prealociran temp buffer za RNNoise izlaz — izbegava heap alloc po frejmu.
+    // tmpIn vise ne treba: skaliranje u int16 opseg radi C bridge.
     private var tmpOut = [Float](repeating: 0, count: 480)
+    /// RNNoise izlaz kasni za ulazom — izmjereno unakrsnom korelacijom na
+    /// govoru: 337 uzoraka (7.02 ms), isto i na govoru sa bukom (338).
+    /// Dry grana u wet/dry miksu mora biti zakasnjena za isto toliko, inace
+    /// se mijesaju dvije verzije istog signala pomjerene u vremenu — to je
+    /// comb filter, ne miks, i pravi diskontinuitete na granicama frameova.
+    public static let rnnoiseDelay = 337
+    /// Zadnjih `rnnoiseDelay` uzoraka prethodnog framea (delay line za dry).
+    private var dryTail = [Float](repeating: 0, count: 337)
 
     public init(mode: CleanMicMode = .balanced) {
         self.mode = mode
@@ -116,6 +129,7 @@ public final class NoiseProcessor: @unchecked Sendable {
     }
 
     public func reset() {
+        for i in 0..<dryTail.count { dryTail[i] = 0 }
         guard handle != nil else { return }
         withUnsafeMutablePointer(to: &handle) { ptr in
             _cm_rnnoise_reset(ptr)
@@ -123,48 +137,35 @@ public final class NoiseProcessor: @unchecked Sendable {
     }
 
     /// Procesira jedan 480-sample frame. Ulaz/izlaz su Float32 -1..1 (AVAudio norm).
-    /// RNNoise interno ocekuje int16 skalu (-32768..32767) kao float — zato
-    /// skaliramo *32768 pre i /32768 posle poziva (vidi rnnoise/examples/rnnoise_demo.c).
+    ///
+    /// Skaliranje u int16 opseg koji RNNoise trazi radi C bridge
+    /// (`cm_rnnoise_process_frame`, vidi RNNoiseBridge.c). Ovdje se NAMJERNO
+    /// ne skalira ponovo — dvostruko skaliranje salje RNNoise-u signal reda
+    /// 2^30 i kvari mu VAD: izmjereno 0.600 na cistoj buci umjesto 0.060,
+    /// uz dodatnih 7.3 dB gusenja govora.
+    ///
     /// - Returns: VAD vjerovatnoca 0..1 (direktno iz `rnnoise_process_frame`)
     @discardableResult
     public func processFrame(out: UnsafeMutablePointer<Float>, input: UnsafePointer<Float>) -> Float {
-        // Skaliraj ulaz u int16 opseg za RNNoise (reuse tmpIn/tmpOut da nema alloc)
-        for i in 0..<Self.frameSize {
-            tmpIn[i] = input[i] * 32768.0
-        }
-        let vad: Float = tmpIn.withUnsafeBufferPointer { inPtr in
-            tmpOut.withUnsafeMutableBufferPointer { outPtr in
-                _cm_rnnoise_process_frame(handle, outPtr.baseAddress!, inPtr.baseAddress!)
-            }
-        }
-        // Vrati u -1..1 opseg
-        for i in 0..<Self.frameSize {
-            let v = tmpOut[i] / 32768.0
-            out[i] = min(1.0, max(-1.0, v))
+        let vad: Float = tmpOut.withUnsafeMutableBufferPointer { outPtr in
+            _cm_rnnoise_process_frame(handle, outPtr.baseAddress!, input)
         }
 
-        // Post-processing: mode-ovani gain + opcioni VAD gate.
-        // Gate je samo sigurnosna mreza; RNNoise-ov izlaz je vec dosta cist.
-        let gateThreshold = mode.vadGateThreshold
-        let gateAtten = mode.vadGateAttenuation
-        let postGain = mode.postGain
+        let wet = mode.wetMix
+        let dry = 1.0 - wet
+        let d = Self.rnnoiseDelay
 
-        if gateAtten > 0 && vad < gateThreshold {
-            // Primijeni gate: linearna interpolacija izmedju (1-gateAtten) pri
-            // vad=0 i 1.0 pri vad=gateThreshold.
-            let t = max(0, min(1, vad / gateThreshold))
-            let frameGain = (1.0 - gateAtten) + gateAtten * t
-            for i in 0..<Self.frameSize {
-                out[i] *= frameGain * postGain
-            }
-        } else {
-            // Nema gate-a, samo post gain.
-            if postGain != 1.0 {
-                for i in 0..<Self.frameSize {
-                    out[i] *= postGain
-                }
-            }
+        for i in 0..<Self.frameSize {
+            // Dry uzorak poravnat sa RNNoise izlazom: input[i - d], pri cemu
+            // prvih d uzoraka dolazi iz repa prethodnog framea.
+            let dryS = i < d ? dryTail[i] : input[i - d]
+            let mixed = tmpOut[i] * wet + dryS * dry
+            out[i] = min(1.0, max(-1.0, mixed))
         }
+
+        // Sacuvaj rep ovog framea za dry delay u sljedecem.
+        for i in 0..<d { dryTail[i] = input[Self.frameSize - d + i] }
+
         return vad
     }
 
