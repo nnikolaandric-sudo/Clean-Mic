@@ -70,7 +70,10 @@ SWIFT_FRAMEWORKS="-framework AVFoundation -framework CoreAudio"
 
 # Helper: compile RNNoiseBridge.c once, reuse across targets
 BRIDGE_OBJ="/tmp/rnnoise_bridge.o"
-if [ ! -f "$BRIDGE_OBJ" ] || [ "$RNNOISE_BRIDGE_H" -nt "$BRIDGE_OBJ" ]; then
+RNNOISE_BRIDGE_C="$PROJECT_DIR/Sources/CleanMicCore/RNNoiseBridge.c"
+# NAPOMENA: ranije se provjeravao samo .h, pa su izmjene u .c-u tiho ignorisane
+# i linkovao se ustajali /tmp/rnnoise_bridge.o. Sada se prati i .c fajl.
+if [ ! -f "$BRIDGE_OBJ" ] || [ "$RNNOISE_BRIDGE_H" -nt "$BRIDGE_OBJ" ] || [ "$RNNOISE_BRIDGE_C" -nt "$BRIDGE_OBJ" ]; then
   echo "🔨 Compiling RNNoiseBridge.c..."
   clang -O3 -fPIC $ARCH_FLAG \
     -I "$RNNOISE_INCLUDE" \

@@ -45,9 +45,33 @@ void cm_rnnoise_destroy(void *handle) {
     rnnoise_destroy((DenoiseState *)handle);
 }
 
+// RNNoise ocekuje uzorke u opsegu 16-bitnog PCM-a (+-32768), NE normalizovane
+// +-1.0 float uzorke. Vidi examples/rnnoise_demo.c: `x[i] = tmp[i]` gdje je
+// tmp[] short — nema dijeljenja sa 32768.
+//
+// CleanMic interno radi sa normalizovanim +-1.0 uzorcima (AVAudioEngine Float32),
+// pa ovdje skaliramo na ulazu i vracamo nazad na izlazu. Bez ovoga RNNoise vidi
+// signal 32768x pretih, VAD ostaje ~0.0 i denoise ne radi nista.
+#define CM_RNNOISE_SCALE 32768.0f
+
 float cm_rnnoise_process_frame(void *handle, float *output, const float *input) {
     if (!handle || !output || !input) return 0.0f;
-    return rnnoise_process_frame((DenoiseState *)handle, output, input);
+
+    const int frame_size = rnnoise_get_frame_size();
+    float scaled[480];
+    if (frame_size != 480) return 0.0f;
+
+    for (int i = 0; i < frame_size; i++) {
+        scaled[i] = input[i] * CM_RNNOISE_SCALE;
+    }
+
+    float vad = rnnoise_process_frame((DenoiseState *)handle, scaled, scaled);
+
+    const float inv = 1.0f / CM_RNNOISE_SCALE;
+    for (int i = 0; i < frame_size; i++) {
+        output[i] = scaled[i] * inv;
+    }
+    return vad;
 }
 
 void cm_rnnoise_reset(void **handle) {
