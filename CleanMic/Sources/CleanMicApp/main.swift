@@ -41,6 +41,9 @@ final class AppModel: ObservableObject {
     @Published var processedLevel: Float = 0
     @Published var statusText = "Spreman"
     @Published var metricsText = ""
+    @Published var isRecording = false
+    @Published var lastRecordingURL: URL?
+    @Published var recordingStatus = ""
 
     private var capture: AudioCapture?
     private var inputRing: RingBuffer?
@@ -48,6 +51,9 @@ final class AppModel: ObservableObject {
     private var engine: ProcessingEngine?
     private var levelTimer: Timer?
     private var drainTimer: Timer?
+    private var recordingWriter: WAVWriter?
+    private var recordingTimer: Timer?
+    private var recordingEndDate: Date?
 
     init() {
         refreshDevices()
@@ -127,15 +133,28 @@ final class AppModel: ObservableObject {
 
             // Drain outputRing — bez ovoga ProcessingEngine staje nakon ~0.3s
             // (outputRing 16384 frameova se napuni, a niko ga ne cita). U Fazi 2.x
-            // ce ga citati HAL driver; do tada ga samo odbacujemo.
-            drainTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak or] _ in
+            // ce ga citati HAL driver; do tada ga samo odbacujemo ili pisemo u fajl kad snimamo.
+            drainTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self, weak or] _ in
                 guard let or = or else { return }
                 var tmp = [Float](repeating: 0, count: 480)
-                // isprazni sve dostupne frameove (max 5 frameova po ticku da ne blokiramo main)
                 var drained = 0
                 while or.availableRead >= 480 && drained < 10 {
-                    _ = or.read(into: &tmp, frames: 480)
+                    let ok = or.read(into: &tmp, frames: 480)
+                    if ok {
+                        // Ako snimamo, pisi u fajl (processed 48k/mono)
+                        if let writer = self?.recordingWriter {
+                            try? writer.write(floats: tmp)
+                        }
+                    }
                     drained += 1
+                }
+                // update countdown
+                if let end = self?.recordingEndDate, self?.isRecording == true {
+                    let rem = max(0, end.timeIntervalSinceNow)
+                    Task { @MainActor in
+                        self?.recordingStatus = String(format: "● Snimam %.0fs...", rem + 0.5)
+                        if rem <= 0 { self?.stopRecording() }
+                    }
                 }
             }
 
@@ -154,12 +173,16 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        if isRecording { stopRecording() }
         capture?.stop()
         engine?.stop()
         levelTimer?.invalidate()
         drainTimer?.invalidate()
+        recordingTimer?.invalidate()
         levelTimer = nil
         drainTimer = nil
+        recordingTimer = nil
+        recordingEndDate = nil
         capture = nil
         engine = nil
         inputRing = nil
@@ -169,6 +192,61 @@ final class AppModel: ObservableObject {
         inputLevel = 0
         processedLevel = 0
         print("[App] stopped")
+    }
+
+    func toggleRecording(duration: Double = 5) {
+        if isRecording { stopRecording(); return }
+        startRecording(duration: duration)
+    }
+
+    func startRecording(duration: Double = 5) {
+        guard isRunning else {
+            statusText = "Prvo klikni ▶ Pokreni"
+            return
+        }
+        guard !isRecording else { return }
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd_HHmmss"
+        let name = "CleanMic_\(df.string(from: Date()))_\(selectedMode).wav"
+        let url = downloads.appendingPathComponent(name)
+        do {
+            let writer = try WAVWriter(url: url, sampleRate: 48000, channels: 1)
+            recordingWriter = writer
+            lastRecordingURL = url
+            recordingEndDate = Date().addingTimeInterval(duration)
+            isRecording = true
+            recordingStatus = "● Snimam \(Int(duration))s..."
+            statusText = "● Snimam \(Int(duration))s → \(name)"
+            print("[App] recording to \(url.path)")
+            // auto-stop timer
+            recordingTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.stopRecording() }
+            }
+        } catch {
+            statusText = "Greška snimanja: \(error.localizedDescription)"
+            print("[App] recording failed: \(error)")
+        }
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recordingEndDate = nil
+        recordingWriter?.close()
+        recordingWriter = nil
+        recordingStatus = ""
+        if let url = lastRecordingURL {
+            statusText = "✅ Sačuvano: \(url.lastPathComponent)"
+            print("[App] saved \(url.path)")
+            // Otkrij u Finder-u
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            statusText = "Snimanje zaustavljeno"
+        }
     }
 
     func setMode(_ mode: CleanMicMode) {
@@ -246,6 +324,51 @@ struct MenuBarView: View {
                 LevelRow(label: "Clean", level: model.processedLevel, color: .green)
                 if !model.metricsText.isEmpty {
                     Text(model.metricsText).font(.caption2).monospaced().foregroundStyle(.secondary)
+                }
+            }
+
+            // Snimi u Downloads — processed (RNNoise) 48k/mono WAV
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    model.toggleRecording(duration: 5)
+                } label: {
+                    HStack {
+                        Image(systemName: model.isRecording ? "stop.circle.fill" : "record.circle")
+                        Text(model.isRecording ? model.recordingStatus : "● Snimi 5s → Downloads")
+                            .font(.caption).bold()
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(model.isRecording ? .red : .primary)
+                .disabled(!model.isRunning)
+                .help(model.isRunning ? "Snima očišćen zvuk (RNNoise) u Downloads" : "Prvo pokreni CleanMic")
+
+                HStack(spacing: 6) {
+                    Button("5s") { model.startRecording(duration: 5) }.disabled(!model.isRunning || model.isRecording).font(.caption2)
+                    Button("10s") { model.startRecording(duration: 10) }.disabled(!model.isRunning || model.isRecording).font(.caption2)
+                    Button("30s") { model.startRecording(duration: 30) }.disabled(!model.isRunning || model.isRecording).font(.caption2)
+                    Spacer()
+                    if model.isRecording {
+                        ProgressView().scaleEffect(0.6)
+                    }
+                }
+
+                if let url = model.lastRecordingURL {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Zadnji snimak:").font(.caption2).foregroundStyle(.secondary)
+                        Text(url.lastPathComponent).font(.caption2).monospaced().lineLimit(1).truncationMode(.middle)
+                        HStack(spacing: 8) {
+                            Button("Otvori folder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([url])
+                            }.font(.caption2)
+                            Button("Pusti") {
+                                NSWorkspace.shared.open(url)
+                            }.font(.caption2)
+                        }
+                    }
+                    .padding(6)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                 }
             }
 

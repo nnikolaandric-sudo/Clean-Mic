@@ -119,11 +119,16 @@ swiftc -o "$BIN_DIR/CleanMicApp" /tmp/build-app/*.swift "$BRIDGE_OBJ" \
   -L "$RNNOISE_LIB_DIR" -lrnnoise
 echo "✅ $BIN_DIR/CleanMicApp"
 
+# Zapakuj u .app bundle — bez Info.plist TCC nikad ne prikaze mic popup
+"$PROJECT_DIR/scripts/make-app-bundle.sh"
+
+
 echo ""
 echo "🎉 Build gotov! (Faza 0.5 — pravi RNNoise)"
 echo "  bin/cleanmic-cli"
 echo "  bin/cleanmic-demo"
 echo "  bin/CleanMicApp"
+echo "  bin/CleanMic.app   <- OVO pokreni za GUI (ima mic dozvolu)"
 echo ""
 echo "Probaj:"
 echo "  ./bin/cleanmic-cli list"
