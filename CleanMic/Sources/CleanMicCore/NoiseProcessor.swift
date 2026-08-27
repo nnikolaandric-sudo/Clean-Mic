@@ -96,6 +96,44 @@ public final class NoiseProcessor: @unchecked Sendable {
     /// Zadnjih `rnnoiseDelay` uzoraka prethodnog framea (delay line za dry).
     private var dryTail = [Float](repeating: 0, count: 337)
 
+    /// Prag ispod kojeg se dry grana gasi, kao udio tekuceg nivoa izlaza.
+    ///
+    /// Dry signal postoji da vrati prirodnost glasu — u pauzama nema glasa da
+    /// se vraca, pa dry tamo samo dodaje buku nazad. Kad je RNNoise izlaz tih,
+    /// RNNoise je siguran da nema govora, pa se dry gasi srazmjerno.
+    ///
+    /// Koristi se VAD iz energije izlaza, a ne RNNoise VAD — taj u pauzama
+    /// ostaje visok (prosjek 0.655) i zato je bio neupotrebljiv.
+    ///
+    /// Prag je relativan na spori envelope izlaza, ne apsolutan, da ne zavisi
+    /// od toga koliko je glasno snimljeno. Mjereno na light modu (wet 0.55):
+    ///   iskljucen -> SNR 10.6 dB, buka -5.6 dB
+    ///   k = 0.10  -> SNR 12.9 dB, buka -8.0 dB
+    ///   k = 0.30  -> SNR 13.7 dB, buka -8.7 dB   <- izabrano
+    ///   k = 0.50  -> SNR 13.8 dB, buka -8.9 dB, ali vjernost pada -3.7 -> -3.5 dB
+    /// Govor i glatkoca granica ostaju nepromijenjeni u cijelom opsegu.
+    private static let dryFloorK: Float = 0.30
+
+    /// Koliko dry grana najmanje ostaje otvorena, kao udio punog dry nivoa.
+    ///
+    /// Dry signal je usput radio i kao comfort noise: stalan tihi sum koji
+    /// maskira to sto RNNoise sam po sebi modulira svoj izlaz. Kad se dry
+    /// pusti da padne na nulu, ta modulacija se ogoli i cuje kao pumpanje —
+    /// tisina pa sum pa tisina. Mjereno kao prosjecan skok nivoa izmedju
+    /// susjednih pauznih frameova (light mod):
+    ///   bez gatea    -> SNR 10.6 dB, skok 1.4 dB
+    ///   floor 0.00   -> SNR 13.7 dB, skok 6.3 dB   <- ogoljeno, pumpa
+    ///   floor 0.20   -> SNR 13.5 dB, skok 3.3 dB   <- izabrano
+    ///   floor 0.50   -> SNR 12.8 dB, skok 2.3 dB
+    /// Gate ne pojacava glasne pauzne frameove — p95 i maksimum ostaju
+    /// identicni; spusta samo tihe, pa je floor jedini nacin da se zadrzi
+    /// ravan pod umjesto potpune tisine.
+    private static let dryFloorMin: Float = 0.20
+    /// Spori envelope izlaza (~nivo govora): skok gore odmah, pad polako.
+    private var outEnv: Float = 0
+    /// Dry udio sa kraja prethodnog framea — pocetna tacka rampe u sljedecem.
+    private var dryPrev: Float = 0
+
     public init(mode: CleanMicMode = .balanced) {
         self.mode = mode
 
@@ -114,7 +152,31 @@ public final class NoiseProcessor: @unchecked Sendable {
             fatalError("[NoiseProcessor] cm_rnnoise_create failed: \(msg)")
         }
         self.handle = h
+        warmUp()
         print("[NoiseProcessor] init mode=\(mode) (RNNoise C lib, frameSize=\(Self.frameSize))")
+    }
+
+    /// Prodji nekoliko frameova kroz mrezu prije nego pocne realtime rad.
+    ///
+    /// Prvi `rnnoise_process_frame` kosta ~17.6 ms umjesto ~0.6 ms, jer se
+    /// 14.7 MB tezina modela tek tada stvarno ucitava u memoriju (page
+    /// faultovi na statickim podacima). Na realtime niti to je propusten
+    /// frame — izmjereno 53.85 ms na zivom mikrofonu, uz 10 ms budzeta.
+    ///
+    /// Forward pass dotakne sve tezine bez obzira na ulaz, pa je tisina
+    /// dovoljna. Nakon zagrijavanja resetujemo RNN stanje da stvarni rad
+    /// pocne cist; tezine ostaju u memoriji jer su staticke.
+    private func warmUp() {
+        let silence = [Float](repeating: 0, count: Self.frameSize)
+        var scratch = [Float](repeating: 0, count: Self.frameSize)
+        for _ in 0..<3 {
+            silence.withUnsafeBufferPointer { inPtr in
+                scratch.withUnsafeMutableBufferPointer { outPtr in
+                    _ = _cm_rnnoise_process_frame(handle, outPtr.baseAddress!, inPtr.baseAddress!)
+                }
+            }
+        }
+        reset()
     }
 
     deinit {
@@ -130,6 +192,8 @@ public final class NoiseProcessor: @unchecked Sendable {
 
     public func reset() {
         for i in 0..<dryTail.count { dryTail[i] = 0 }
+        outEnv = 0
+        dryPrev = 0
         guard handle != nil else { return }
         withUnsafeMutablePointer(to: &handle) { ptr in
             _cm_rnnoise_reset(ptr)
@@ -151,17 +215,32 @@ public final class NoiseProcessor: @unchecked Sendable {
             _cm_rnnoise_process_frame(handle, outPtr.baseAddress!, input)
         }
 
-        let wet = mode.wetMix
-        let dry = 1.0 - wet
+        let dryBase = 1.0 - mode.wetMix
         let d = Self.rnnoiseDelay
 
+        // Energija RNNoise izlaza za ovaj frame -> koliko dry pustamo.
+        var energy: Float = 0
+        for i in 0..<Self.frameSize { energy += tmpOut[i] * tmpOut[i] }
+        let rms = (energy / Float(Self.frameSize)).squareRoot()
+        outEnv = rms > outEnv ? rms : outEnv * 0.999
+        let floor = outEnv * Self.dryFloorK
+        var openness = floor > 1e-9 ? min(1, rms / floor) : 1
+        openness = max(openness, Self.dryFloorMin)
+        let dryTarget = dryBase * openness
+
+        // Dry udio se rampa kroz frame umjesto da skoci na granici — bez toga
+        // promjena izmedju dva framea pravi step diskontinuitet svakih 10 ms.
+        let dd = (dryTarget - dryPrev) / Float(Self.frameSize)
+
         for i in 0..<Self.frameSize {
+            let dr = dryPrev + dd * Float(i)
             // Dry uzorak poravnat sa RNNoise izlazom: input[i - d], pri cemu
             // prvih d uzoraka dolazi iz repa prethodnog framea.
             let dryS = i < d ? dryTail[i] : input[i - d]
-            let mixed = tmpOut[i] * wet + dryS * dry
+            let mixed = tmpOut[i] * (1 - dr) + dryS * dr
             out[i] = min(1.0, max(-1.0, mixed))
         }
+        dryPrev = dryTarget
 
         // Sacuvaj rep ovog framea za dry delay u sljedecem.
         for i in 0..<d { dryTail[i] = input[Self.frameSize - d + i] }

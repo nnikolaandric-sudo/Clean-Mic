@@ -105,15 +105,51 @@ ali ne i odnos govora prema buci, pa su sva tri moda davala identican SNR.
 
 Mjereno na govoru sa pink bukom (ulaz: SNR 7.5 dB):
 
-| Mod | wet | SNR | govor | buka | granice frameova |
-|-----|-----|-----|-------|------|------------------|
-| Light | 0.55 | 10.6 dB | −2.5 dB | −5.6 dB | 0.77x |
-| Balanced | 0.85 | 12.9 dB | −2.0 dB | −7.5 dB | 0.88x |
-| Maximum | 0.95 | 13.1 dB | −1.6 dB | −7.2 dB | 1.02x |
+| Mod | wet | SNR | govor | buka | granice | pod pauze | pumpanje |
+|-----|-----|-----|-------|------|---------|-----------|----------|
+| Light | 0.55 | 13.5 dB | −2.5 dB | −8.6 dB | 0.78x | −39.9 dB | 3.3 dB |
+| Balanced | 0.85 | 13.3 dB | −2.0 dB | −7.8 dB | 0.91x | −44.1 dB | 4.8 dB |
+| Maximum | 0.95 | 13.1 dB | −1.6 dB | −7.2 dB | 1.05x | −46.8 dB | 5.6 dB |
+
+Ljestvica je kompromis, ne "sve bolje udesno": Light je najstabilniji i najvjerniji
+glasu, Maximum ima najtise pauze ali najvise pumpanja.
 
 "granice frameova" = srednji skok signala tacno na granici 480-uzorackog framea
 podijeljen srednjim skokom svuda; 1.0 znaci da se granice ne razlikuju od
 ostatka signala. Ispod 1.0 je pozeljno.
+
+### Adaptivni dry gate
+
+Dry signal postoji da vrati prirodnost glasu. U pauzama nema glasa da se vraca,
+pa dry tamo samo vraca buku — i to je bilo jedino sto je ogranicavalo koliko
+tihe pauze mogu biti. Sada se dry gasi srazmjerno kad je RNNoise izlaz tih,
+sa pragom **relativnim** na tekuci nivo (ne apsolutnim, da ne zavisi od toga
+koliko je glasno snimljeno). Na light modu: SNR 10.6 → 13.5 dB, buka −5.6 →
+−8.6 dB, uz nepromijenjen govor. Na cistoj buci: −16.5 → −25.5 dB.
+
+Dry je usput radio i kao **comfort noise** — stalan tihi sum koji maskira to
+sto RNNoise sam modulira svoj izlaz. Kad se pusti da padne na nulu, ta se
+modulacija ogoli i cuje kao pumpanje. Zato dry ima donju granicu (0.20):
+
+| floor | SNR | skok nivoa izmedju pauznih frameova |
+|-------|-----|-------------------------------------|
+| bez gatea | 10.6 dB | 1.4 dB |
+| 0.00 | 13.7 dB | 6.3 dB (pumpa) |
+| **0.20** | **13.5 dB** | **3.3 dB** |
+| 0.50 | 12.8 dB | 2.3 dB |
+
+### Zagrijavanje modela
+
+Prvi `rnnoise_process_frame` kosta **17.6 ms** umjesto ~0.6 ms — tada se 14.7 MB
+tezina modela stvarno ucitava u memoriju. Na realtime niti to je propusten
+frame (izmjereno 53.85 ms na zivom mikrofonu, uz 10 ms budzeta). `NoiseProcessor`
+sada prodje 3 framea tisine pri inicijalizaciji i resetuje RNN stanje.
+
+Ostaje **sporadican skok od ~48 ms na hladnom startu procesa** — otprilike 1 od
+6 pokretanja. Nije u audio kodu: javlja se i u offline putu koji nema ni niti ni
+sleep, dok tijesna C petlja od 2000 frameova ima max 4.1 ms. Vjerovatno je
+rijec o pokretanju procesa i rasporedu po jezgrima. U zivim testovima ga je ring
+buffer apsorbovao — 0 underruna i 0 overruna u svakom pokretanju.
 
 Dvije stvari koje su mjerenjem odbacene:
 
