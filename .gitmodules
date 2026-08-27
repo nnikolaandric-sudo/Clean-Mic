@@ -1,0 +1,4 @@
+[submodule "CleanMic/Vendor/rnnoise"]
+	path = CleanMic/Vendor/rnnoise
+	url = https://github.com/xiph/rnnoise.git
+	ignore = untracked

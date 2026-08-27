@@ -1,0 +1,87 @@
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+*.xcworkspace/*
+!*.xcworkspace/contents.xcworkspacedata
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# C/C++
+*.o
+*.a
+*.so
+*.dylib
+*.out
+
+# RNNoise build artifacts (kept: Vendor/rnnoise/.git, .m4, src/, include/)
+CleanMic/Vendor/rnnoise/.libs/
+CleanMic/Vendor/rnnoise/*.o
+CleanMic/Vendor/rnnoise/*.lo
+CleanMic/Vendor/rnnoise/*.la
+CleanMic/Vendor/rnnoise/librnnoise*.a
+CleanMic/Vendor/rnnoise/config.log
+CleanMic/Vendor/rnnoise/config.status
+CleanMic/Vendor/rnnoise/Makefile
+CleanMic/Vendor/rnnoise/Makefile.in
+CleanMic/Vendor/rnnoise/configure
+CleanMic/Vendor/rnnoise/aclocal.m4
+CleanMic/Vendor/rnnoise/autom4te.cache/
+CleanMic/Vendor/rnnoise/build-aux/
+CleanMic/Vendor/rnnoise/config.h
+CleanMic/Vendor/rnnoise/config.h.in
+CleanMic/Vendor/rnnoise/stamp-h1
+CleanMic/Vendor/rnnoise/depcomp
+CleanMic/Vendor/rnnoise/install-sh
+CleanMic/Vendor/rnnoise/missing
+CleanMic/Vendor/rnnoise/compile
+CleanMic/Vendor/rnnoise/test-driver
+CleanMic/Vendor/rnnoise/ar-lib
+CleanMic/Vendor/rnnoise/.deps/
+CleanMic/Vendor/rnnoise/.dirstamp
+CleanMic/Vendor/rnnoise/examples/.deps/
+CleanMic/Vendor/rnnoise/examples/.libs/
+CleanMic/Vendor/rnnoise/examples/*.o
+CleanMic/Vendor/rnnoise/examples/*.lo
+# Preuzeti model (nije source; regenerisan kroz download_model.sh)
+CleanMic/Vendor/rnnoise/rnnoise_data*.tar.gz
+CleanMic/Vendor/rnnoise/src/rnnoise_data.h
+
+# Audio Driver
+*.driver
+*.plugin
+
+# Signing
+*.p12
+*.mobileprovision
+*.key
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+temp/
+
+# Build artefakti (generise scripts/build.sh)
+CleanMic/bin/
