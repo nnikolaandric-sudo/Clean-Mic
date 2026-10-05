@@ -23,7 +23,7 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedLibrary("rnnoise"),
-                .unsafeFlags(["-L", "\(packageDirectory)/Vendor/rnnoise"]),
+                .unsafeFlags(["-L", "\(Context.packageDirectory)/Vendor/rnnoise"]),
             ]
         ),
         .executableTarget(

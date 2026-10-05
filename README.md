@@ -47,23 +47,33 @@ Docs/
 └── Design/              # UX mockups
 ```
 
+## Preuzimanje
+
+Gotova aplikacija (DMG, universal, macOS 13+) je na stranici **Releases**.
+Instalacija i prvo pokretanje: [CleanMic/INSTALL.md](CleanMic/INSTALL.md).
+Snimanje → transkript → izvještaj: [CleanMic/TRANSCRIBE.md](CleanMic/TRANSCRIBE.md).
+
 ## Brzi start (nakon setup-a)
 
 ```bash
-# Faza 0 — spike
-open CleanMic/CleanMic.xcodeproj
-# Build & Run -> testiraj capture + RNNoise offline
+git submodule update --init --recursive
+./CleanMic/scripts/build.sh          # samo Command Line Tools, bez Xcode-a
+open CleanMic/bin/CleanMic.app
 ```
+
+Detalji: [CleanMic/LOCAL_RUN.md](CleanMic/LOCAL_RUN.md).
 
 ## Status
 
-🚧 **Faza 0 — Inicijalizacija** — PRD dokumenti kreirani, repo struktura postavljena.
+🚧 **v1.1.0** — menu-bar aplikacija snima očišćen zvuk (RNNoise) bez vremenskog
+ograničenja, transkribuje i pravi izvještaj. Virtualni mikrofon (HAL driver) još nije urađen.
 
 Pogledaj [Roadmap](Docs/PRD/PRD-07-Roadmap.md) za plan razvoja.
 
 ## Privatnost
 
-Audio se obrađuje isključivo lokalno. Nema cloud upload-a govora u MVP-u.
+Uklanjanje šuma radi isključivo lokalno. Transkripcija i izvještaj su opcioni i
+šalju snimak na OpenRouter — samo kad ih korisnik uključi ili pokrene.
 
 ## Licenca
 

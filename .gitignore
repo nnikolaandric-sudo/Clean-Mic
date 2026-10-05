@@ -85,3 +85,5 @@ temp/
 
 # Build artefakti (generise scripts/build.sh)
 CleanMic/bin/
+# Release artefakti (generise scripts/make-dmg.sh)
+CleanMic/dist/

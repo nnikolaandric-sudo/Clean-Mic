@@ -21,8 +21,7 @@
 ./CleanMic/bin/cleanmic-cli record-processed 5 /tmp/clean.wav --mode balanced
 
 # SwiftUI Menu-bar App (GUI)
-./CleanMic/bin/CleanMicApp &
-# ili: open CleanMic/bin/CleanMicApp
+open CleanMic/bin/CleanMic.app
 ```
 
 ## Šta je testirano (Faza 0.5 — pravi RNNoise)
@@ -45,25 +44,20 @@ Fajlovi se snimaju u `/tmp/*.wav` — preslušaj sa `afplay`.
 ## Build (ponovno kompajliranje)
 
 ```bash
-# Bez Xcode, samo Command Line Tools — build-uje i RNNoise C lib ako treba
-./CleanMic/scripts/build.sh
-# ili eksplicitno samo RNNoise:
-./CleanMic/scripts/build-rnnoise.sh
-
-# Sa Xcode (preporučeno za dalji razvoj)
-open CleanMic/Package.swift   # ili: xed CleanMic
-# ili:
-swift run cleanmic-cli list   # (zahteva patchovan SDK, vidi build.sh)
+# Bez Xcode, samo Command Line Tools — universal (arm64 + x86_64), macOS 13+
+./CleanMic/scripts/build.sh                 # -> CleanMic/bin/
+ARCHS=arm64 ./CleanMic/scripts/build.sh     # samo Apple Silicon (brže)
+./CleanMic/scripts/make-dmg.sh              # -> CleanMic/dist/CleanMic-<verzija>.dmg
+./CleanMic/bin/cleanmic-cli selftest        # offline provjera builda
 ```
 
-### Zašto patch?
+`build.sh` kopira Core + target u jedan modul i zove `swiftc` po arhitekturi,
+pa `lipo` spaja u universal binarku. SwiftPM bez punog Xcode-a ne zna napraviti
+universal build, zato flat-copy. Verzija je u `CleanMic/VERSION`.
 
-CLT 16.0 isporučuje Swift 6.0.3.1.10 ali SDK 15.2 built sa 6.0.3.1.5 + duplikat `SwiftBridging` modulemap.
-Patch:
-- `sed` na `*.swiftinterface` (1.5 → 1.10)
-- VFS overlay da sakrije `module.modulemap` duplikat
-
-Sa punim Xcode.app patch nije potreban.
+Raniji workaround (patchovan SDK u `/tmp` + VFS overlay za CLT 16.0 / Swift
+6.0.3) više nije potreban i uklonjen je — testirano 05.10.2026 sa Swift 6.3.3
+i SDK-om 26.5.
 
 ### RNNoise build detalji
 
@@ -89,11 +83,14 @@ CleanMic/
 │   ├── CleanMicApp/    # SwiftUI App
 │   └── CleanMicClangDemo/ # C++ demo
 ├── scripts/
-│   ├── build.sh        # rebuild sve binarke (poziva build-rnnoise.sh, kompilira RNNoiseBridge.c, linkuje librnnoise.a)
-│   ├── build-rnnoise.sh# build RNNoise C lib (curl model ako treba, clang bez autotools)
-│   ├── run.sh          # quick run helper
-│   ├── vfs.json        # VFS overlay workaround
-│   └── empty.modulemap
+│   ├── build.sh          # universal build svih binarki + .app bundle
+│   ├── build-rnnoise.sh  # RNNoise C lib po arhitekturi (curl model ako treba, clang bez autotools)
+│   ├── make-app-bundle.sh# Info.plist + ikona + ad-hoc potpis
+│   ├── make-dmg.sh       # build + DMG u dist/
+│   ├── make-icon.swift   # generiše Resources/AppIcon.icns
+│   └── run.sh            # quick run helper
+├── Resources/AppIcon.icns
+├── VERSION
 └── Package.swift       # swift-tools-version 6.0, radi sa Xcode (unsafeFlags -L Vendor/rnnoise)
 ```
 
@@ -178,7 +175,8 @@ u `Sources/CleanMicCore/NoiseProcessor.swift`.
 
 ## Privatnost
 
-Obrada isključivo lokalno, nema cloud upload-a. WAV fajlovi ostaju u `/tmp`.
+Denoise (RNNoise) je isključivo lokalan. Transkripcija i izvještaj šalju snimak
+na OpenRouter — vidi [TRANSCRIBE.md](TRANSCRIBE.md).
 
 ## Napomena o Xcode
 

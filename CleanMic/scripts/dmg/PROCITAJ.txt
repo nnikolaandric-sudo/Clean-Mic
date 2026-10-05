@@ -1,0 +1,36 @@
+CleanMic — instalacija
+======================
+
+1. Prevuci CleanMic u folder Applications (prečica je u ovom prozoru).
+
+2. Prvo pokretanje — aplikacija nije potpisana Apple Developer ID-om, pa je
+   macOS blokira dok je jednom ručno ne odobriš:
+
+   a) Otvori Applications i dvaput klikni CleanMic. Pojaviće se poruka da
+      Apple ne može provjeriti aplikaciju — klikni "Done" / "Gotovo".
+   b) System Settings → Privacy & Security → skroluj do dna →
+      "CleanMic was blocked…" → klikni "Open Anyway" i potvrdi.
+
+   Ili, brže, u Terminalu:
+
+      xattr -dr com.apple.quarantine /Applications/CleanMic.app
+      open /Applications/CleanMic.app
+
+   Ovo se radi samo jednom po Macu.
+
+3. CleanMic se pojavljuje u menu baru (ikona talasa, gore desno).
+   Pri prvom snimanju dozvoli pristup mikrofonu i folderu Downloads.
+
+4. Transkript i izvještaj: klik na zupčanik → Podešavanja… → Transkript →
+   unesi OpenRouter ključ (sk-or-…) → Sačuvaj. Ključ se unosi jednom po Macu.
+
+Korištenje
+----------
+- "Pokreni snimanje" snima očišćen zvuk sve dok ne klikneš "Zaustavi i sačuvaj".
+  Nema vremenskog ograničenja.
+- Nakon zaustavljanja snimak se transkribuje i pravi se izvještaj
+  (Sažetak, Ključne tačke, Akcije, puni transkript).
+- Snimak duži od 1 sata se ne šalje automatski — prvo te pita za potvrdu.
+- Fajlovi su u Downloads/CleanMic.
+
+Radi na macOS 13 (Ventura) i novijem, Apple Silicon i Intel.

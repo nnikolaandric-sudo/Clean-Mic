@@ -1,26 +1,56 @@
 import Foundation
 import AVFoundation
-import CleanMicCore
 
 func printUsage() {
     print("""
-    CleanMic CLI — Faza 0 Spike (lokalno testiranje bez virtualnog drivera)
+    CleanMic CLI — snimanje (RNNoise) + transkripcija + izvještaj (OpenRouter)
 
     KORIŠTENJE:
       cleanmic-cli list                          — lista input uređaja
-      cleanmic-cli record [sec] [out.wav]        — snimi raw mic -> WAV (default 5s)
-      cleanmic-cli record-processed [sec] [out.wav] --mode light|balanced|maximum
-                                             — snimi mic -> RNNoise -> WAV
+      cleanmic-cli record-processed [trajanje] [out.wav] [--mode light|balanced|maximum]
+                            [--device ID] [--transcribe]
+                                                 — mic -> RNNoise -> WAV. Bez trajanja snima
+                                                   dok ne pritisneš Enter ili Ctrl+C.
+      cleanmic-cli record [trajanje] [out.wav] [--transcribe]
+                                                 — isto, ali sirov mikrofon (bez RNNoise)
       cleanmic-cli process <in.wav> <out.wav> [--mode MODE]
                                                  — offline WAV -> WAV kroz NoiseProcessor
+      cleanmic-cli transcribe <audio> [--language sr|hr|bs|en] [--report-model MODEL]
+                            [--no-report] [--yes]
+                                                 — audio -> transkript + izvještaj
+      cleanmic-cli report <transkript.txt> [--audio snimak.wav] [--language sr]
+                                                 — samo izvještaj iz postojećeg transkripta
+                                                   (ne naplaćuje transkripciju ponovo)
+      cleanmic-cli set-key <OPENROUTER_API_KEY>  — sačuvaj ključ u ~/.config/cleanmic/openrouter_key
+      cleanmic-cli check-key                     — provjeri da li ključ radi
+      cleanmic-cli selftest                      — offline provjere (bez mikrofona i mreže)
       cleanmic-cli test-rings                    — stress test RingBuffer
       cleanmic-cli help
 
+    FLAGOVI:
+      --transcribe              nakon snimanja pošalji na OpenRouter
+      --language sr             hint za jezik (sr, hr, bs, en; default auto)
+      --transcribe-model MODEL  default: \(OpenRouterConfig.transcribeModelDefault)
+      --report-model MODEL      default: \(OpenRouterConfig.reportModelDefault)
+                                ostali: \(OpenRouterConfig.cheapReportModels.dropFirst().joined(separator: ", "))
+      --no-report               samo transkript, bez izvještaja
+      --yes, -y                 bez pitanja potvrdi transkripciju snimka dužeg od 1 h
+      --api-key KEY             eksplicitni ključ (inače OPENROUTER_API_KEY env / config fajl)
+      --verbose, -v             detaljan ispis (isti kao ~/Library/Logs/CleanMic/cleanmic.log)
+
+    TRAJANJE: 10 | 90s | 5min | 30m | 2h — ili izostavi i snima dok ga ne zaustaviš.
+    SNIMAK DUŽI OD 1 h: prije transkripcije se traži potvrda (trošak i trajanje obrade).
+
     PRIMJERI:
-      cleanmic-cli list
-      cleanmic-cli record 5 /tmp/raw.wav
-      cleanmic-cli record-processed 10 /tmp/clean.wav --mode balanced
-      cleanmic-cli process /tmp/raw.wav /tmp/clean.wav --mode maximum
+      cleanmic-cli record-processed sastanak.wav --transcribe --language sr
+      cleanmic-cli record-processed 15 /tmp/clean.wav --mode balanced
+      cleanmic-cli transcribe sastanak.wav --language sr
+      cleanmic-cli report sastanak.transcript.txt --language sr
+
+    IZLAZNI FAJLOVI (pored snimka):
+      <ime>.transcript.txt   — transkript (dugi snimci: pasusi sa [HH:MM:SS])
+      <ime>.transcript.json  — sirovi OpenRouter odgovori (usage/cost)
+      <ime>.izvjestaj.md     — Sažetak + Ključne tačke + Akcije + puni transkript
     """)
 }
 
@@ -31,40 +61,371 @@ if args.isEmpty || args.first == "help" || args.first == "--help" || args.first 
     exit(0)
 }
 
+/// Flagovi koji uzimaju vrijednost — da ih pozicioni argumenti preskoče.
+let valueFlags: Set<String> = ["--mode", "-m", "--language", "--lang", "-l", "--transcribe-model", "--model",
+                               "--report-model", "--api-key", "--audio", "--device"]
+
+func flagValue(_ names: [String]) -> String? {
+    for n in names {
+        if let idx = args.firstIndex(of: n), args.count > idx + 1 {
+            return args[idx + 1]
+        }
+        // --key=value oblik
+        for a in args {
+            if a.hasPrefix(n + "=") {
+                return String(a.dropFirst((n + "=").count))
+            }
+        }
+    }
+    return nil
+}
+
+func hasFlag(_ names: [String]) -> Bool {
+    for n in names {
+        if args.contains(n) { return true }
+    }
+    return false
+}
+
+/// Argumenti poslije komande koji nisu flagovi ni njihove vrijednosti.
+func positionals() -> [String] {
+    var out: [String] = []
+    var skip = false
+    for a in args.dropFirst() {
+        if skip { skip = false; continue }
+        if a.hasPrefix("-") {
+            if valueFlags.contains(a) { skip = true }
+            continue
+        }
+        out.append(a)
+    }
+    return out
+}
+
+/// [trajanje] [out.wav] u bilo kom redoslijedu; bez trajanja = dok se ne zaustavi.
+func recordArgs(defaultPrefix: String) -> (seconds: Double?, path: String) {
+    var seconds: Double?
+    var path: String?
+    for p in positionals() {
+        if seconds == nil, let s = parseDuration(p) { seconds = s } else if path == nil { path = p }
+    }
+    return (seconds, path ?? "/tmp/\(defaultPrefix)_\(Int(Date().timeIntervalSince1970)).wav")
+}
+
+DebugLog.echoToStdout = hasFlag(["--verbose", "-v"])
+
 switch args.first! {
 case "list":
     runList()
-case "record":
-    let sec = args.count > 1 ? Double(args[1]) ?? 5 : 5
-    let out = args.count > 2 ? args[2] : "/tmp/cleanmic_raw_\(Int(Date().timeIntervalSince1970)).wav"
-    runRecord(seconds: sec, outputPath: out, processed: false, mode: .balanced)
-case "record-processed":
-    var sec: Double = 10
-    var out = "/tmp/cleanmic_processed_\(Int(Date().timeIntervalSince1970)).wav"
-    var mode = CleanMicMode.balanced
-    if args.count > 1, let s = Double(args[1]) { sec = s }
-    if args.count > 2 && !args[2].hasPrefix("--") { out = args[2] }
-    if let mIdx = args.firstIndex(where: { $0 == "--mode" || $0 == "-m" }), args.count > mIdx+1 {
-        mode = parseMode(args[mIdx+1])
+case "set-key":
+    guard args.count >= 2 else {
+        print("❌ set-key zahtijeva ključ: cleanmic-cli set-key sk-or-v1-...")
+        exit(1)
     }
-    runRecord(seconds: sec, outputPath: out, processed: true, mode: mode)
+    OpenRouterConfig.saveAPIKey(args[1])
+    print("✅ Ključ sačuvan (~/.config/cleanmic/openrouter_key, chmod 600) + UserDefaults")
+    print("   Hint: \(OpenRouterConfig.storedKeyHint)")
+case "check-key":
+    runCheckKey()
+case "record":
+    let r = recordArgs(defaultPrefix: "cleanmic_raw")
+    runRecordRaw(seconds: r.seconds, outputPath: r.path)
+    if hasFlag(["--transcribe"]) { runTranscribeFlow(audioPath: r.path, opts: transcribeOptsFromArgs()) }
+case "record-processed":
+    let r = recordArgs(defaultPrefix: "cleanmic_processed")
+    let mode = flagValue(["--mode", "-m"]).map(parseMode) ?? .balanced
+    let device = flagValue(["--device"]).flatMap { UInt32($0) }
+    runRecordProcessed(seconds: r.seconds, outputPath: r.path, mode: mode, deviceID: device)
+    if hasFlag(["--transcribe"]) { runTranscribeFlow(audioPath: r.path, opts: transcribeOptsFromArgs()) }
 case "process":
-    guard args.count >= 3 else {
+    let p = positionals()
+    guard p.count >= 2 else {
         print("❌ process zahtijeva <in.wav> <out.wav>")
         printUsage()
         exit(1)
     }
-    var mode = CleanMicMode.balanced
-    if let mIdx = args.firstIndex(where: { $0 == "--mode" }), args.count > mIdx+1 {
-        mode = parseMode(args[mIdx+1])
+    runOfflineProcess(inPath: p[0], outPath: p[1], mode: flagValue(["--mode", "-m"]).map(parseMode) ?? .balanced)
+case "transcribe":
+    guard let audio = positionals().first else {
+        print("❌ transcribe zahtijeva <audio fajl>")
+        printUsage()
+        exit(1)
     }
-    runOfflineProcess(inPath: args[1], outPath: args[2], mode: mode)
+    runTranscribeFlow(audioPath: audio, opts: transcribeOptsFromArgs())
+case "report":
+    guard let txt = positionals().first else {
+        print("❌ report zahtijeva <transkript.txt>")
+        printUsage()
+        exit(1)
+    }
+    runReportOnly(transcriptPath: txt, opts: transcribeOptsFromArgs())
+case "selftest":
+    runSelfTest()
 case "test-rings":
     runRingTest()
 default:
     print("❌ Nepoznata komanda: \(args.first!)")
     printUsage()
     exit(1)
+}
+DebugLog.flush()
+
+// MARK: - Stop / stdin
+
+/// Jedan čitač stdin-a za cijeli proces: i "Enter zaustavlja snimanje" i
+/// "Nastaviti? [d/N]" čitaju iz istog reda, da se ne otimaju za isti unos.
+final class StdinLines: @unchecked Sendable {
+    static let shared = StdinLines()
+    private let lock = NSLock()
+    private var lines: [String] = []
+    private var started = false
+    private var eof = false
+
+    private func startIfNeeded() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !started else { return }
+        started = true
+        let t = Thread { [self] in
+            while let line = readLine() {
+                lock.lock(); lines.append(line); lock.unlock()
+            }
+            lock.lock(); eof = true; lock.unlock()
+        }
+        t.start()
+    }
+
+    /// Linija ako je stigla, bez čekanja.
+    func poll() -> String? {
+        startIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.isEmpty ? nil : lines.removeFirst()
+    }
+
+    /// Čeka liniju; nil na EOF.
+    func next() -> String? {
+        startIfNeeded()
+        while true {
+            lock.lock()
+            if !lines.isEmpty { let l = lines.removeFirst(); lock.unlock(); return l }
+            let done = eof
+            lock.unlock()
+            if done { return nil }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+}
+
+final class StopRequest: @unchecked Sendable {
+    static let shared = StopRequest()
+    private let lock = NSLock()
+    private var flag = false
+    private var source: DispatchSourceSignal?
+
+    var requested: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    func set() { lock.lock(); flag = true; lock.unlock() }
+
+    /// Ctrl+C zaustavlja snimanje i čuva fajl, umjesto da ubije proces usred upisa.
+    func installSIGINT() {
+        signal(SIGINT, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        src.setEventHandler { [self] in set() }
+        src.resume()
+        source = src
+    }
+}
+
+let stdinIsTTY = isatty(STDIN_FILENO) != 0
+
+/// Čeka `seconds` (ili zauvijek ako je nil) uz ispis; vraća se na Enter / Ctrl+C / `shouldStop`.
+func waitWhileRecording(seconds: Double?, shouldStop: () -> Bool = { false }, status: (Double) -> String) {
+    StopRequest.shared.installSIGINT()
+    if seconds == nil {
+        print(stdinIsTTY ? "   ⏺  Snimam — Enter ili Ctrl+C za kraj." : "   ⏺  Snimam — Ctrl+C za kraj.")
+    }
+    let start = Date()
+    while true {
+        let elapsed = Date().timeIntervalSince(start)
+        if let seconds, elapsed >= seconds { break }
+        if StopRequest.shared.requested || shouldStop() { break }
+        if seconds == nil, stdinIsTTY, StdinLines.shared.poll() != nil { break }
+        print("   ⏱  \(status(elapsed))   ", terminator: "\r")
+        fflush(stdout)
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+    print("")
+}
+
+func clock(_ seconds: Double) -> String {
+    let s = Int(seconds)
+    return String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+}
+
+// MARK: - Transcribe helpers
+
+/// Trajanje: "90" = 90s, "90s" = 90s, "5min"/"5m" = 300s, "1h" = 3600s
+func parseDuration(_ s: String) -> Double? {
+    let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if t.hasSuffix("min"), let v = Double(t.dropLast(3)) { return v * 60 }
+    if t.hasSuffix("h"), let v = Double(t.dropLast(1)) { return v * 3600 }
+    if t.hasSuffix("m"), let v = Double(t.dropLast(1)) { return v * 60 }
+    if t.hasSuffix("s"), let v = Double(t.dropLast(1)) { return v }
+    return Double(t)
+}
+
+struct TranscribeOpts {
+    var lang: String?
+    var tModel: String
+    var rModel: String
+    var key: String?
+    var noReport: Bool
+}
+
+func transcribeOptsFromArgs() -> TranscribeOpts {
+    let lang = flagValue(["--language", "--lang", "-l"])
+    let tModel = flagValue(["--transcribe-model", "--model"]) ?? OpenRouterConfig.transcribeModelDefault
+    let rModel = flagValue(["--report-model"]) ?? OpenRouterConfig.reportModelDefault
+    let key = flagValue(["--api-key"])
+    let noReport = hasFlag(["--no-report"])
+    return TranscribeOpts(lang: lang, tModel: tModel, rModel: rModel, key: key, noReport: noReport)
+}
+
+func requireKey(_ explicit: String?) {
+    if OpenRouterConfig.resolveAPIKey(explicit: explicit) == nil {
+        print("❌ Nema OpenRouter ključa.")
+        print("   Rješenje: export OPENROUTER_API_KEY=sk-or-...  ili  cleanmic-cli set-key sk-or-...")
+        exit(1)
+    }
+}
+
+/// Snimak duži od 1 h: traži potvrdu prije slanja (trošak + trajanje obrade).
+func confirmIfLong(audioPath: String, duration: Double) {
+    guard TranscriptionService.needsConfirmation(seconds: duration) else { return }
+    let cost = TranscriptionService.estimatedCostUSD(seconds: duration)
+    let eta = TranscriptionService.estimatedProcessingSeconds(audioSeconds: duration)
+    print("⚠️  Snimak traje \(ReportService.humanDuration(duration)) — duže od 1 h.")
+    print(String(format: "   Transkripcija: oko $%.2f, obrada oko %@.", cost, ReportService.humanDuration(eta)))
+    if hasFlag(["--yes", "-y"]) {
+        print("   Potvrđeno sa --yes.")
+        return
+    }
+    guard stdinIsTTY else {
+        print("❌ Potrebna potvrda: pokreni ponovo sa --yes.")
+        exit(2)
+    }
+    print("   Nastaviti? [d/N] ", terminator: "")
+    fflush(stdout)
+    let answer = (StdinLines.shared.next() ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+    guard ["d", "da", "y", "yes"].contains(answer) else {
+        print("ℹ️  Preskočeno. Kasnije: cleanmic-cli transcribe \"\(audioPath)\" --yes")
+        exit(0)
+    }
+}
+
+func runTranscribeFlow(audioPath: String, opts: TranscribeOpts) {
+    print("\n🎧 Transkripcija: \(audioPath)")
+    print("   Model: \(opts.tModel)  Jezik: \(opts.lang ?? "auto")")
+    requireKey(opts.key)
+    guard FileManager.default.fileExists(atPath: audioPath) else {
+        print("❌ Fajl ne postoji: \(audioPath)")
+        exit(1)
+    }
+    let duration = TranscriptionService.audioDuration(path: audioPath) ?? 0
+    if duration > 0 { print("   Trajanje: \(ReportService.humanDuration(duration))") }
+    confirmIfLong(audioPath: audioPath, duration: duration)
+
+    do {
+        let res = try TranscriptionService.transcribeSync(
+            audioPath: audioPath, apiKey: opts.key, model: opts.tModel, language: opts.lang,
+            progress: { done, total in
+                if total > 1 { print("   ⏳ dio \(done)/\(total)") } else if done == 0 { print("   ⏳ šaljem na OpenRouter…") }
+            })
+        let cost = res.costUSD.map { String(format: ", $%.4f", $0) } ?? ""
+        print("✅ Transkript (\(res.text.count) znakova, \(res.parts) dio/dijelova\(cost)) → \(res.transcriptPath)")
+        print("   ----")
+        print(res.text.prefix(800))
+        if res.text.count > 800 { print("   ... (skraćeno, puni tekst u .transcript.txt)") }
+        print("   ----")
+
+        if opts.noReport {
+            print("ℹ️  --no-report: preskačem izvještaj.")
+            return
+        }
+        generateReport(transcript: res.text, audioPath: audioPath, duration: duration, opts: opts)
+    } catch {
+        print("❌ Transkripcija neuspješna: \(error)")
+        print("   Detalji: \(DebugLog.fileURL.path)")
+        DebugLog.flush()
+        exit(1)
+    }
+}
+
+func generateReport(transcript: String, audioPath: String, duration: Double?, opts: TranscribeOpts) {
+    print("\n📝 Izvještaj (\(opts.rModel)) ...")
+    do {
+        let rep = try ReportService.generateSync(
+            transcript: transcript, audioPath: audioPath, apiKey: opts.key, model: opts.rModel,
+            language: opts.lang, transcribeModel: opts.tModel, durationSeconds: duration,
+            progress: { stage, done, total in
+                if total > 1 { print("   ⏳ \(stage) \(done)/\(total)") }
+            })
+        let via = rep.modelUsed == opts.rModel ? "" : " (odgovorio rezervni model \(rep.modelUsed))"
+        let how = rep.chunks > 1 ? ", obrađeno u \(rep.chunks) dijelova" : ""
+        print("✅ Izvještaj → \(rep.reportPath)\(via)\(how)")
+        print("   ----")
+        print(rep.summaryMarkdown)
+        print("   ----")
+    } catch {
+        print("❌ Izvještaj neuspješan: \(error)")
+        print("   Transkript je sačuvan. Ponovi samo izvještaj: cleanmic-cli report <transkript.txt>")
+        print("   Detalji: \(DebugLog.fileURL.path)")
+        DebugLog.flush()
+        exit(1)
+    }
+}
+
+/// Samo izvještaj iz postojećeg .transcript.txt — bez ponovne transkripcije.
+func runReportOnly(transcriptPath: String, opts: TranscribeOpts) {
+    guard let transcript = try? String(contentsOfFile: transcriptPath, encoding: .utf8) else {
+        print("❌ Ne mogu pročitati transkript: \(transcriptPath)")
+        exit(1)
+    }
+    requireKey(opts.key)
+    // sastanak.transcript.txt → sastanak.wav (izvještaj ide pored snimka)
+    var base = (transcriptPath as NSString).deletingPathExtension
+    if base.hasSuffix(".transcript") { base = String(base.dropLast(".transcript".count)) }
+    let audio = flagValue(["--audio"]) ?? (base + ".wav")
+    let duration = TranscriptionService.audioDuration(path: audio)
+    print("📄 Transkript: \(transcriptPath) (\(transcript.count) znakova)")
+    generateReport(transcript: transcript, audioPath: audio, duration: duration, opts: opts)
+}
+
+func runCheckKey() {
+    guard let key = OpenRouterConfig.resolveAPIKey(explicit: flagValue(["--api-key"])) else {
+        print("❌ Nema OpenRouter ključa. cleanmic-cli set-key sk-or-...")
+        exit(1)
+    }
+    print("🔑 Ključ: \(OpenRouterConfig.storedKeyHint)")
+    do {
+        let info = try OpenRouterClient.checkKey(key)
+        print("✅ Ključ radi — \(info.summary)")
+    } catch {
+        print("❌ \(error)")
+        exit(1)
+    }
+}
+
+func runSelfTest() {
+    print("🧪 CleanMic selftest (offline)\n")
+    let checks = SelfTest.runAll()
+    for c in checks {
+        print("  \(c.passed ? "✅" : "❌") \(c.name)")
+        print("       \(c.detail)")
+    }
+    let failed = checks.filter { !$0.passed }.count
+    print("\n\(failed == 0 ? "✅ Sve provjere prošle" : "❌ Palo: \(failed)") (\(checks.count - failed)/\(checks.count))")
+    if failed > 0 { exit(1) }
 }
 
 // MARK: - Commands
@@ -110,12 +471,10 @@ func runList() {
     if fmt.channelCount == 0 {
         print("   ⚠️  inputNode ima 0 kanala — možda nema dozvole ili nema mic-a")
     }
+    print("\n   OpenRouter ključ: \(OpenRouterConfig.storedKeyHint)")
 }
 
-func runRecord(seconds: Double, outputPath: String, processed: Bool, mode: CleanMicMode) {
-    print("🎙  CleanMic Record\(processed ? " + Processed(\(mode))" : "") — \(seconds)s -> \(outputPath)")
-
-    // Check permission
+func ensureMicPermission() {
     let perm = DeviceLister.checkMicrophonePermission()
     print("   Permission: \(perm)")
     if perm == "denied" || perm == "restricted" {
@@ -125,181 +484,95 @@ func runRecord(seconds: Double, outputPath: String, processed: Bool, mode: Clean
     if perm == "notDetermined" {
         print("   ℹ︎  Tražim dozvolu...")
         let sem = DispatchSemaphore(value: 0)
-        var granted = false
-        DeviceLister.requestMicrophonePermission { g in granted = g; sem.signal() }
+        let granted = LockedFlag()
+        DeviceLister.requestMicrophonePermission { g in if g { granted.set() }; sem.signal() }
         sem.wait()
-        if !granted {
+        if !granted.isSet {
             print("❌ Permission denied")
             exit(1)
         }
         Thread.sleep(forTimeInterval: 0.5)
     }
+}
 
-    let outURL = URL(fileURLWithPath: outputPath)
-    let capture = AudioCapture()
-    var writer: WAVWriter?
+final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
+}
 
-    // For processed mode: setup rings + engine
-    var inputRing: RingBuffer?
-    var outputRing: RingBuffer?
-    var procEngine: ProcessingEngine?
-
-    var rawWriter: WAVWriter? // fallback
-    var processedWriter: WAVWriter?
-
-    // Setup writers lazy after we know format
-    let startSem = DispatchSemaphore(value: 0)
-    var started = false
-    var startError: Error?
-
-    // We need to handle first PCM to create writer
-    capture.onPCM = { buffer in
-        // First buffer: create writer
-        if writer == nil && rawWriter == nil && processedWriter == nil {
-            if processed {
-                // For processed: feed inputRing, don't write directly
-                // Also create processed writer for outputRing drain
-                return
-            } else {
-                do {
-                    let w = try WAVWriter(url: outURL, sampleRate: buffer.format.sampleRate, channels: buffer.format.channelCount)
-                    writer = w
-                    print("   📝 Writer: \(buffer.format) -> \(outURL.path)")
-                } catch {
-                    print("❌ Writer error: \(error)")
-                }
-            }
-        }
-        if !processed {
-            try? writer?.write(buffer: buffer)
-        }
-        // Level logging every ~1s
+func printRecorded(_ url: URL) {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path), let size = attrs[.size] as? UInt64 else {
+        print("❌ File nije kreiran ili prazan")
+        return
     }
-
-    // If processed: inputRing -> procEngine -> outputRing -> writer
-    if processed {
-        inputRing = RingBuffer(capacityFrames: 16384)
-        outputRing = RingBuffer(capacityFrames: 16384)
-        procEngine = ProcessingEngine(inputRing: inputRing!, outputRing: outputRing!, mode: mode)
-
-        // capture feeds inputRing
-        capture.onPCM = { buffer in
-            guard let data = buffer.floatChannelData else { return }
-            let frames = Int(buffer.frameLength)
-            let ch = Int(buffer.format.channelCount)
-            // Convert to mono if needed (already converted to 48k/mono by capture's converter)
-            // For spike, assume capture already 48k/mono Float32
-            // So just copy channel 0
-            if ch >= 1 {
-                inputRing?.write(data[0], frames: frames)
-            }
-        }
-
-        // Drain outputRing to file in separate timer
-        procEngine?.start()
+    print("✅ Snimljeno: \(url.path) (\(String(format: "%.1f", Double(size) / 1024 / 1024)) MB)")
+    if let file = try? AVAudioFile(forReading: url) {
+        let d = Double(file.length) / file.processingFormat.sampleRate
+        print("   File: \(Int(file.fileFormat.sampleRate)) Hz, \(file.fileFormat.channelCount) ch, trajanje \(ReportService.humanDuration(d))")
+    } else {
+        print("   ⚠️  Ne mogu pročitati file")
     }
+    print("   ▶️  Play: afplay \"\(url.path)\"")
+}
 
-    // Start capture
+/// mic -> RNNoise -> WAV, ista putanja koda kao u aplikaciji (RecordingSession).
+func runRecordProcessed(seconds: Double?, outputPath: String, mode: CleanMicMode, deviceID: AudioDeviceID?) {
+    let length = seconds.map { ReportService.humanDuration($0) } ?? "dok se ne zaustavi"
+    print("🎙  CleanMic Record + RNNoise (\(mode)) — \(length) -> \(outputPath)")
+    ensureMicPermission()
+
+    let session = RecordingSession(outputURL: URL(fileURLWithPath: outputPath), mode: mode, deviceID: deviceID)
     do {
-        try capture.start()
-        started = true
+        try session.start()
     } catch {
-        startError = error
-    }
-
-    if let e = startError {
-        print("❌ Start failed: \(e)")
-        // Show devices for debug
+        print("❌ Start failed: \(error)")
         runList()
         exit(1)
     }
-
-    // Progress + writer setup for processed
-    if processed {
-        // Need to poll outputRing and write to file
-        // Create writer with target format 48k/mono
-        do {
-            processedWriter = try WAVWriter(url: outURL, sampleRate: 48000, channels: 1)
-            print("   📝 Processed writer: 48k/mono -> \(outURL.path)")
-        } catch {
-            print("❌ Writer error: \(error)")
-            exit(1)
-        }
-
-        // Background drain
-        let drainQueue = DispatchQueue(label: "drain")
-        var draining = true
-        drainQueue.async {
-            var tmp = [Float](repeating: 0, count: NoiseProcessor.frameSize)
-            while draining || (outputRing?.availableRead ?? 0) > 0 {
-                if (outputRing?.availableRead ?? 0) >= NoiseProcessor.frameSize {
-                    let ok = outputRing?.read(into: &tmp, frames: NoiseProcessor.frameSize) ?? false
-                    if ok {
-                        try? processedWriter?.write(floats: tmp)
-                    }
-                } else {
-                    Thread.sleep(forTimeInterval: 0.005)
-                }
-            }
-            print("   drain finished")
-        }
-
-        // Timer for progress
-        let start = Date()
-        while Date().timeIntervalSince(start) < seconds {
-            let elapsed = Date().timeIntervalSince(start)
-            let remaining = seconds - elapsed
-            let availIn = inputRing?.availableRead ?? 0
-            let availOut = outputRing?.availableRead ?? 0
-            let frames = procEngine?.framesProcessed ?? 0
-            print(String(format: "   ⏱  %.1f/%.1fs  inRing:%5d outRing:%5d frames:%5d vad:%.2f avgMs:%.2f",
-                         elapsed, seconds, availIn, availOut, frames, procEngine?.vadLast ?? 0, procEngine?.avgProcessingMs ?? 0), terminator: "\r")
-            fflush(stdout)
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        print("")
-        draining = false
-        // let drain finish
-        Thread.sleep(forTimeInterval: 0.3)
-        capture.stop()
-        procEngine?.stop()
-        processedWriter?.close()
-
-        // Metrics
-        if let ir = inputRing, let or = outputRing, let pe = procEngine {
-            let m = MetricsCollector.collect(inputRing: ir, outputRing: or, engine: pe)
-            print(m.description)
-        }
-        drainQueue.sync { }
-
-    } else {
-        // Raw mode: simple sleep
-        let start = Date()
-        while Date().timeIntervalSince(start) < seconds {
-            let elapsed = Date().timeIntervalSince(start)
-            print(String(format: "   ⏱  %.1f/%.1fs recording...", elapsed, seconds), terminator: "\r")
-            fflush(stdout)
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        print("")
-        capture.stop()
-        writer?.close()
+    waitWhileRecording(seconds: seconds, shouldStop: { !session.isRunning }) { _ in
+        let s = session.snapshot()
+        return String(format: "%@  %5.1f MB  ulaz %.3f  čisto %.3f  vad %.2f  %.2f ms/frame",
+                      clock(s.duration), Double(s.bytes) / 1024 / 1024, s.inputLevel, s.cleanLevel, s.vad, s.avgProcessingMs)
     }
+    let summary = session.stop()
+    if let msg = summary.reason.message { print("⚠️  \(msg)") }
+    print("   Ispušteno blokova: \(summary.droppedBlocks)  Restart mikrofona: \(summary.captureRestarts)")
+    printRecorded(summary.url)
+}
 
-    // Verify file
-    if let attrs = try? FileManager.default.attributesOfItem(atPath: outURL.path), let size = attrs[.size] as? UInt64 {
-        print("✅ Snimljeno: \(outURL.path) (\(size) bytes, \(String(format:"%.1f", Double(size)/1024)) KB)")
-        // Try to read back
-        do {
-            let file = try AVAudioFile(forReading: outURL)
-            print("   File: \(file.processingFormat) frames=\(file.length) duration=\(String(format:"%.2f", Double(file.length)/file.processingFormat.sampleRate))s")
-        } catch {
-            print("   ⚠️  Ne mogu pročitati file: \(error)")
-        }
-        print("   ▶️  Play: afplay \"\(outURL.path)\"  ili  open \"\(outURL.path)\"")
-    } else {
-        print("❌ File nije kreiran ili prazan")
+/// Sirov mikrofon -> WAV (bez RNNoise) — za AB poređenje sa record-processed.
+func runRecordRaw(seconds: Double?, outputPath: String) {
+    let length = seconds.map { ReportService.humanDuration($0) } ?? "dok se ne zaustavi"
+    print("🎙  CleanMic Record (raw) — \(length) -> \(outputPath)")
+    ensureMicPermission()
+
+    let outURL = URL(fileURLWithPath: outputPath)
+    let capture = AudioCapture()
+    let writer: StreamingWAVWriter
+    do {
+        writer = try StreamingWAVWriter(url: outURL, sampleRate: 48000, channels: 1)
+    } catch {
+        print("❌ Writer error: \(error)")
+        exit(1)
     }
+    // Tap isporučuje bafere serijski, pa writer ne treba lock; zatvara se tek nakon capture.stop().
+    capture.onPCM = { buffer in
+        guard let data = buffer.floatChannelData else { return }
+        try? writer.write(data[0], count: Int(buffer.frameLength))
+    }
+    do {
+        try capture.start()
+    } catch {
+        print("❌ Start failed: \(error)")
+        runList()
+        exit(1)
+    }
+    waitWhileRecording(seconds: seconds) { elapsed in "\(clock(elapsed)) snimam…" }
+    capture.stop()
+    writer.close()
+    printRecorded(outURL)
 }
 
 func runOfflineProcess(inPath: String, outPath: String, mode: CleanMicMode) {
@@ -325,7 +598,7 @@ func runOfflineProcess(inPath: String, outPath: String, mode: CleanMicMode) {
         var output: [Float] = []
         output.reserveCapacity(samples.count)
 
-        var t0 = CFAbsoluteTimeGetCurrent()
+        let t0 = CFAbsoluteTimeGetCurrent()
         var frames = 0
         var maxMs: Double = 0
         var totalMs: Double = 0

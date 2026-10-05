@@ -18,6 +18,10 @@ public final class ProcessingEngine: @unchecked Sendable {
 
     public var onMetrics: ((Double, Float) -> Void)? // (ms, vad)
 
+    /// Periodični ispis metrika. Isključeno po defaultu: snimanje sada traje
+    /// satima, pa bi ispis svakih 5 s samo punio log.
+    public var verbose = false
+
     public init(inputRing: RingBuffer, outputRing: RingBuffer, mode: CleanMicMode = .balanced) {
         self.inputRing = inputRing
         self.outputRing = outputRing
@@ -101,8 +105,7 @@ public final class ProcessingEngine: @unchecked Sendable {
 
             onMetrics?(ms, vad)
 
-            // Optional: log every 500 frames
-            if framesProcessed % 500 == 0 {
+            if verbose && framesProcessed % 500 == 0 {
                 print("[ProcessingEngine] frames=\(framesProcessed) avgMs=\(String(format:"%.2f", avgProcessingMs)) maxMs=\(String(format:"%.2f", maxProcessingMs)) vad=\(String(format:"%.2f", vad))")
             }
         }

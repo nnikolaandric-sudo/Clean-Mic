@@ -1,136 +1,83 @@
 #!/bin/bash
-# CleanMic Build Script — Faza 0.5
-# Radi sa Command Line Tools (bez punog Xcode) koristeci patched SDK + VFS overlay workaround
-# za SwiftBridging duplikat, i flat-copy + swiftc umjesto SPM (zbudje radi sa CLT).
-set -e
+# CleanMic build — universal (arm64 + x86_64), macOS 13+.
+# Radi samo sa Command Line Tools (bez punog Xcode): flat-copy + swiftc umjesto
+# SwiftPM-a, jer SwiftPM bez Xcode-a ne zna napraviti universal binarku.
+#
+#   ./scripts/build.sh                      -> bin/        (razvoj)
+#   OUT_DIR=dist ./scripts/build.sh         -> dist/       (za DMG, vidi make-dmg.sh)
+#   ARCHS=arm64 ./scripts/build.sh          -> samo Apple Silicon (brže)
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BIN_DIR="$PROJECT_DIR/bin"
-PATCHED_SDK="/tmp/patched-sdk/MacOSX15.2.sdk"
-VFS_JSON="$SCRIPT_DIR/vfs.json"
+OUT_DIR="${OUT_DIR:-$PROJECT_DIR/bin}"
+case "$OUT_DIR" in /*) ;; *) OUT_DIR="$PROJECT_DIR/$OUT_DIR" ;; esac
+export ARCHS="${ARCHS:-arm64 x86_64}"
+export MIN_OS="${MIN_OS:-13.0}"
+
 RNNOISE_INCLUDE="$PROJECT_DIR/Vendor/rnnoise/include"
 RNNOISE_LIB_DIR="$PROJECT_DIR/Vendor/rnnoise"
-RNNOISE_BRIDGE_H="$PROJECT_DIR/Sources/CleanMicCore/include/RNNoiseBridge.h"
+CORE="$PROJECT_DIR/Sources/CleanMicCore"
 
-echo "🔨 CleanMic Build — Faza 0.5 (real RNNoise)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/cleanmic-build.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
 
-# 0. Build RNNoise C lib (ako vec nije)
-if [ ! -f "$RNNOISE_LIB_DIR/librnnoise.a" ] || [ ! -f "$PROJECT_DIR/Vendor/rnnoise/src/rnnoise_data.h" ]; then
-  "$SCRIPT_DIR/build-rnnoise.sh"
-else
-  echo "✅ librnnoise.a vec postoji"
+echo "🔨 CleanMic build — $ARCHS, macOS $MIN_OS+ → $OUT_DIR"
+
+"$SCRIPT_DIR/build-rnnoise.sh"
+
+# Core + target u jedan modul; `import CleanMicCore` tada ne treba.
+mkdir -p "$OUT_DIR" "$WORK/cli" "$WORK/app"
+cp "$CORE/"*.swift "$WORK/cli/"
+cp "$CORE/"*.swift "$WORK/app/"
+sed 's/^import CleanMicCore$//' "$PROJECT_DIR/Sources/CleanMicCLI/main.swift" > "$WORK/cli/main.swift"
+for f in "$PROJECT_DIR/Sources/CleanMicApp/"*.swift; do
+  sed 's/^import CleanMicCore$//' "$f" > "$WORK/app/$(basename "$f")"
+done
+
+CLI_SLICES=()
+APP_SLICES=()
+for ARCH in $ARCHS; do
+  TARGET="$ARCH-apple-macos$MIN_OS"
+  echo "🔨 [$ARCH] RNNoiseBridge.c"
+  clang -O3 -fPIC -target "$TARGET" \
+    -I "$RNNOISE_INCLUDE" -I "$CORE/include" \
+    -c "$CORE/RNNoiseBridge.c" -o "$WORK/bridge-$ARCH.o"
+
+  echo "🔨 [$ARCH] cleanmic-cli"
+  swiftc -O -target "$TARGET" -o "$WORK/cleanmic-cli-$ARCH" \
+    "$WORK/cli/"*.swift "$WORK/bridge-$ARCH.o" \
+    -framework AVFoundation -framework CoreAudio \
+    -L "$RNNOISE_LIB_DIR" -lrnnoise
+  CLI_SLICES+=("$WORK/cleanmic-cli-$ARCH")
+
+  echo "🔨 [$ARCH] CleanMicApp"
+  swiftc -O -target "$TARGET" -o "$WORK/CleanMicApp-$ARCH" \
+    "$WORK/app/"*.swift "$WORK/bridge-$ARCH.o" \
+    -framework AVFoundation -framework CoreAudio -framework SwiftUI -framework AppKit \
+    -framework ServiceManagement \
+    -L "$RNNOISE_LIB_DIR" -lrnnoise
+  APP_SLICES+=("$WORK/CleanMicApp-$ARCH")
+done
+
+lipo -create "${CLI_SLICES[@]}" -output "$OUT_DIR/cleanmic-cli"
+lipo -create "${APP_SLICES[@]}" -output "$OUT_DIR/CleanMicApp"
+echo "✅ $OUT_DIR/cleanmic-cli ($(lipo -archs "$OUT_DIR/cleanmic-cli"))"
+echo "✅ $OUT_DIR/CleanMicApp ($(lipo -archs "$OUT_DIR/CleanMicApp"))"
+
+# C++ demo (mock, nije dio aplikacije) — samo za razvoj, ne ide u dist.
+if [ "$OUT_DIR" = "$PROJECT_DIR/bin" ]; then
+  clang++ -std=c++17 -o "$OUT_DIR/cleanmic-demo" "$PROJECT_DIR/Sources/CleanMicClangDemo/main.cpp" \
+    -framework CoreAudio -framework CoreFoundation
+  echo "✅ $OUT_DIR/cleanmic-demo"
 fi
-
-# 1. Patch SDK ako je potrebno
-if [ ! -d "$PATCHED_SDK" ]; then
-  echo "📦 Patching SDK (1.5 -> 1.10)..."
-  mkdir -p /tmp/patched-sdk
-  if [ ! -d "/tmp/patched-sdk/MacOSX15.2.sdk" ]; then
-    cp -R "/Library/Developer/CommandLineTools/SDKs/MacOSX15.2.sdk" /tmp/patched-sdk/ 2>/dev/null || \
-    cp -R "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk" /tmp/patched-sdk/MacOSX15.2.sdk
-  fi
-  find /tmp/patched-sdk/MacOSX15.2.sdk -name "*.swiftinterface" -exec sed -i '' 's/swiftlang-6.0.3.1.5/swiftlang-6.0.3.1.10/g' {} \; 2>/dev/null || true
-  echo "✅ SDK patched at $PATCHED_SDK"
-else
-  echo "✅ Patched SDK vec postoji"
-fi
-
-# ensure VFS overlay exists
-if [ ! -f "$VFS_JSON" ]; then
-  echo "" > "$SCRIPT_DIR/empty.modulemap"
-  cat > "$VFS_JSON" << 'EOF'
-{
-  "version": 0,
-  "roots": [
-    {
-      "type": "directory",
-      "name": "/Library/Developer/CommandLineTools/usr/include/swift",
-      "contents": [
-        {
-          "type": "file",
-          "name": "module.modulemap",
-          "external-contents": "/tmp/empty.modulemap"
-        }
-      ]
-    }
-  ]
-}
-EOF
-  touch /tmp/empty.modulemap
-fi
-
-mkdir -p "$BIN_DIR"
-
-# Common flags za ObjC++ kompilaciju (RNNoise bridge) i Swift linking
-ARCH_FLAG="-target arm64-apple-macosx15.0"
-if [ "$(uname -m)" = "x86_64" ]; then
-  ARCH_FLAG="-target x86_64-apple-macosx15.0"
-fi
-SWIFT_FRAMEWORKS="-framework AVFoundation -framework CoreAudio"
-
-# Helper: compile RNNoiseBridge.c once, reuse across targets
-BRIDGE_OBJ="/tmp/rnnoise_bridge.o"
-RNNOISE_BRIDGE_C="$PROJECT_DIR/Sources/CleanMicCore/RNNoiseBridge.c"
-# NAPOMENA: ranije se provjeravao samo .h, pa su izmjene u .c-u tiho ignorisane
-# i linkovao se ustajali /tmp/rnnoise_bridge.o. Sada se prati i .c fajl.
-if [ ! -f "$BRIDGE_OBJ" ] || [ "$RNNOISE_BRIDGE_H" -nt "$BRIDGE_OBJ" ] || [ "$RNNOISE_BRIDGE_C" -nt "$BRIDGE_OBJ" ]; then
-  echo "🔨 Compiling RNNoiseBridge.c..."
-  clang -O3 -fPIC $ARCH_FLAG \
-    -I "$RNNOISE_INCLUDE" \
-    -I "$PROJECT_DIR/Sources/CleanMicCore/include" \
-    -c "$PROJECT_DIR/Sources/CleanMicCore/RNNoiseBridge.c" \
-    -o "$BRIDGE_OBJ"
-  echo "✅ $BRIDGE_OBJ"
-fi
-
-# Compile cleanmic-cli (Swift + RNNoise bridge C obj)
-echo "🔨 Building cleanmic-cli (Swift + RNNoise)..."
-mkdir -p /tmp/build-cli
-cp "$PROJECT_DIR/Sources/CleanMicCore/"*.swift /tmp/build-cli/
-cp "$PROJECT_DIR/Sources/CleanMicCLI/main.swift" /tmp/build-cli/main.swift
-sed -i '' 's/import CleanMicCore//g' /tmp/build-cli/main.swift 2>/dev/null || sed -i 's/import CleanMicCore//g' /tmp/build-cli/main.swift
-
-swiftc -o "$BIN_DIR/cleanmic-cli" /tmp/build-cli/*.swift "$BRIDGE_OBJ" \
-  -sdk "$PATCHED_SDK" $SWIFT_FRAMEWORKS $ARCH_FLAG \
-  -no-verify-emitted-module-interface -vfsoverlay "$VFS_JSON" \
-  -Xcc "-I$RNNOISE_INCLUDE" \
-  -Xcc "-I$PROJECT_DIR/Sources/CleanMicCore/include" \
-  -L "$RNNOISE_LIB_DIR" -lrnnoise
-echo "✅ $BIN_DIR/cleanmic-cli"
-
-# C++ demo (nije dirnut, ostaje isti)
-echo "🔨 Building cleanmic-demo (C++)..."
-clang++ -std=c++17 -o "$BIN_DIR/cleanmic-demo" "$PROJECT_DIR/Sources/CleanMicClangDemo/main.cpp" \
-  -framework CoreAudio -framework CoreFoundation
-echo "✅ $BIN_DIR/cleanmic-demo"
-
-# SwiftUI App
-echo "🔨 Building CleanMicApp (SwiftUI)..."
-mkdir -p /tmp/build-app
-cp "$PROJECT_DIR/Sources/CleanMicCore/"*.swift /tmp/build-app/
-cp "$PROJECT_DIR/Sources/CleanMicApp/main.swift" /tmp/build-app/main-app.swift
-sed -i '' 's/import CleanMicCore//g' /tmp/build-app/main-app.swift 2>/dev/null || sed -i 's/import CleanMicCore//g' /tmp/build-app/main-app.swift
-rm -f /tmp/build-app/main.swift 2>/dev/null || true
-swiftc -o "$BIN_DIR/CleanMicApp" /tmp/build-app/*.swift "$BRIDGE_OBJ" \
-  -sdk "$PATCHED_SDK" $SWIFT_FRAMEWORKS -framework SwiftUI -framework AppKit $ARCH_FLAG \
-  -no-verify-emitted-module-interface -vfsoverlay "$VFS_JSON" \
-  -Xcc "-I$RNNOISE_INCLUDE" \
-  -Xcc "-I$PROJECT_DIR/Sources/CleanMicCore/include" \
-  -L "$RNNOISE_LIB_DIR" -lrnnoise
-echo "✅ $BIN_DIR/CleanMicApp"
 
 # Zapakuj u .app bundle — bez Info.plist TCC nikad ne prikaze mic popup
-"$PROJECT_DIR/scripts/make-app-bundle.sh"
-
+OUT_DIR="$OUT_DIR" "$SCRIPT_DIR/make-app-bundle.sh"
 
 echo ""
-echo "🎉 Build gotov! (Faza 0.5 — pravi RNNoise)"
-echo "  bin/cleanmic-cli"
-echo "  bin/cleanmic-demo"
-echo "  bin/CleanMicApp"
-echo "  bin/CleanMic.app   <- OVO pokreni za GUI (ima mic dozvolu)"
+echo "🎉 Build gotov"
+echo "  $OUT_DIR/CleanMic.app   <- GUI (menu bar)"
+echo "  $OUT_DIR/cleanmic-cli   <- CLI: selftest | check-key | record-processed | transcribe | report"
 echo ""
-echo "Probaj:"
-echo "  ./bin/cleanmic-cli list"
-echo "  ./bin/cleanmic-cli process /tmp/cleanmic_synthetic_in.wav /tmp/out.wav --mode balanced"
-echo "  ./bin/cleanmic-cli record-processed 3 /tmp/clean.wav --mode balanced"
+echo "Provjera:  $OUT_DIR/cleanmic-cli selftest"
+echo "DMG:       ./scripts/make-dmg.sh"

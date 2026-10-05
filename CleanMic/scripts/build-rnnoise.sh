@@ -1,37 +1,17 @@
 #!/bin/bash
-# CleanMic RNNoise build — Faza 0.5
-# Kompajlira xiph/rnnoise (git submodule) u staticku biblioteku.
+# CleanMic RNNoise build
+# Kompajlira xiph/rnnoise (git submodule) u staticku biblioteku — universal
+# (arm64 + x86_64), da ista aplikacija radi i na Apple Silicon i na Intel Macu.
 # Koristi se umjesto autotools jer CLT nema autoreconf/autoconf.
-set -e
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDOR_DIR="$PROJECT_DIR/Vendor/rnnoise"
-BUILD_DIR="$VENDOR_DIR/build"
 OUTPUT_LIB="$VENDOR_DIR/librnnoise.a"
 
-# Detekcija arhitekture — uskladi sa scripts/build.sh targetom da nema ld warninga.
-if [ "$(uname -m)" = "x86_64" ]; then
-  ARCH_FLAGS="-target x86_64-apple-macosx15.0"
-else
-  ARCH_FLAGS="-target arm64-apple-macosx15.0"
-fi
-
-# Hardverski SIMD: ARM64 Apple Clang automatski ukljucuje NEON, x86_64
-# ne treba posebne flagove (SSE2 je baseline za macOS x86_64).
-SIMD_FLAGS=""
-
-# Common RNNoise compile flags:
-#   -DHAVE_CONFIG_H je sigurno preskociti (koristimo config.h samo za autotools
-#    stvari koje necemo koristiti, kao INSTALL). Ali pitch.c i rnn.c ocekuju
-#    neke makroe. Probaj bez; ako link fail, dodaj minimalan config.h.
-#   -fvisibility=hidden: sakrij sve osim RNNOISE_EXPORT-ovanih simbola.
-#   -O3: RNNoise je compute-heavy.
-COMMON_FLAGS=(
-  "-O3" "-fPIC" $ARCH_FLAGS
-  "-DRNNOISE_BUILD"  # activate RNNOISE_EXPORT __attribute__((visibility("default"))) on GNU
-  "-I$VENDOR_DIR/include"
-  "-I$VENDOR_DIR/src"
-)
+# Uskladi sa scripts/build.sh — isti min macOS i iste arhitekture, da nema ld warninga.
+ARCHS="${ARCHS:-arm64 x86_64}"
+MIN_OS="${MIN_OS:-13.0}"
 
 if [ ! -d "$VENDOR_DIR/src" ]; then
   echo "❌ RNNoise submodule nije initovan. Pokreni:"
@@ -47,23 +27,24 @@ if [ ! -f "$DATA_HEADER" ]; then
     echo "❌ model_version fajl nedostaje u RNNoise vendor diru"
     exit 1
   fi
-  MODEL_HASH=$(cat "$VENDOR_DIR/model_version" | tr -d '[:space:]')
+  MODEL_HASH=$(tr -d '[:space:]' < "$VENDOR_DIR/model_version")
   MODEL_URL="https://media.xiph.org/rnnoise/models/rnnoise_data-${MODEL_HASH}.tar.gz"
-  echo "📦 Preuzimam RNNoise model (~$60MB) sa $MODEL_URL"
+  echo "📦 Preuzimam RNNoise model (~60MB) sa $MODEL_URL"
   if ! command -v curl >/dev/null 2>&1; then
     echo "❌ curl nije dostupan — instaliraj ga ili ručno preuzmi model."
     exit 1
   fi
-  cd "$VENDOR_DIR"
-  curl -sL -o rnnoise_data.tar.gz "$MODEL_URL"
-  if [ ! -s rnnoise_data.tar.gz ]; then
-    echo "❌ Download fajla neuspešan (prazan fajl)"
-    rm -f rnnoise_data.tar.gz
-    exit 1
-  fi
-  tar -xzf rnnoise_data.tar.gz
-  rm rnnoise_data.tar.gz
-  cd "$SCRIPT_DIR"
+  (
+    cd "$VENDOR_DIR"
+    curl -sL -o rnnoise_data.tar.gz "$MODEL_URL"
+    if [ ! -s rnnoise_data.tar.gz ]; then
+      echo "❌ Download fajla neuspešan (prazan fajl)"
+      rm -f rnnoise_data.tar.gz
+      exit 1
+    fi
+    tar -xzf rnnoise_data.tar.gz
+    rm rnnoise_data.tar.gz
+  )
   if [ ! -f "$DATA_HEADER" ]; then
     echo "❌ rnnoise_data.h se nije pojavio nakon extrakta"
     exit 1
@@ -71,40 +52,44 @@ if [ ! -f "$DATA_HEADER" ]; then
   echo "✅ Model preuzet i raspakovan"
 fi
 
-mkdir -p "$BUILD_DIR"
-
 # Izvori — vidi vendor/rnnoise/Makefile.am RNNOISE_SOURCES (bez x86 RTCD).
 # dump_features*, dump_rnnoise_tables, write_weights su trening alati i nisu
 # dio librnnoise.a, ali parse_lpcnet_weights.c JESTE (koristi ga denoise.c
 # preko extern const WeightArray).
-SOURCES=(
-  "$VENDOR_DIR/src/denoise.c"
-  "$VENDOR_DIR/src/rnn.c"
-  "$VENDOR_DIR/src/pitch.c"
-  "$VENDOR_DIR/src/kiss_fft.c"
-  "$VENDOR_DIR/src/celt_lpc.c"
-  "$VENDOR_DIR/src/nnet.c"
-  "$VENDOR_DIR/src/nnet_default.c"
-  "$VENDOR_DIR/src/parse_lpcnet_weights.c"
-  "$VENDOR_DIR/src/rnnoise_data.c"
-  "$VENDOR_DIR/src/rnnoise_tables.c"
-)
+SOURCES=(denoise rnn pitch kiss_fft celt_lpc nnet nnet_default parse_lpcnet_weights rnnoise_data rnnoise_tables)
 
-OBJECTS=()
-for src in "${SOURCES[@]}"; do
-  obj="$BUILD_DIR/$(basename "${src%.c}.o")"
-  OBJECTS+=("$obj")
-  if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ]; then
-    echo "  cc $(basename "$src")"
-    clang "${COMMON_FLAGS[@]}" -c "$src" -o "$obj"
+SLICES=()
+for ARCH in $ARCHS; do
+  BUILD_DIR="$VENDOR_DIR/build/$ARCH-macos$MIN_OS"
+  SLICE="$BUILD_DIR/librnnoise.a"
+  mkdir -p "$BUILD_DIR"
+  OBJECTS=()
+  REBUILT=0
+  for name in "${SOURCES[@]}"; do
+    src="$VENDOR_DIR/src/$name.c"
+    obj="$BUILD_DIR/$name.o"
+    OBJECTS+=("$obj")
+    if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ]; then
+      echo "  cc [$ARCH] $name.c"
+      #   -fvisibility se ne dira: RNNOISE_BUILD aktivira RNNOISE_EXPORT.
+      #   -O3: RNNoise je compute-heavy. NEON (arm64) i SSE2 (x86_64) su baseline.
+      clang -O3 -fPIC -target "$ARCH-apple-macos$MIN_OS" -DRNNOISE_BUILD \
+        -I"$VENDOR_DIR/include" -I"$VENDOR_DIR/src" -c "$src" -o "$obj"
+      REBUILT=1
+    fi
+  done
+  if [ "$REBUILT" = 1 ] || [ ! -f "$SLICE" ]; then
+    rm -f "$SLICE"
+    ar rcs "$SLICE" "${OBJECTS[@]}"
   fi
+  SLICES+=("$SLICE")
 done
 
-echo "  ar librnnoise.a"
-# Kreiraj arhivu (ili osvjezi ako postoji)
 rm -f "$OUTPUT_LIB"
-ar rcs "$OUTPUT_LIB" "${OBJECTS[@]}"
-ranlib "$OUTPUT_LIB"
+if [ "${#SLICES[@]}" -gt 1 ]; then
+  lipo -create "${SLICES[@]}" -output "$OUTPUT_LIB"
+else
+  cp "${SLICES[0]}" "$OUTPUT_LIB"
+fi
 
-echo "✅ RNNoise built: $OUTPUT_LIB"
-ls -lh "$OUTPUT_LIB"
+echo "✅ RNNoise built: $OUTPUT_LIB ($(lipo -archs "$OUTPUT_LIB"), macOS $MIN_OS+)"
