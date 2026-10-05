@@ -49,7 +49,8 @@ Docs/
 
 ## Preuzimanje
 
-Gotova aplikacija (DMG, universal, macOS 13+) je na stranici **Releases**.
+Gotova aplikacija (DMG, universal, macOS 13+):
+**[preuzmi zadnju verziju](https://github.com/nnikolaandric-sudo/Clean-Mic/releases/latest)**.
 Instalacija i prvo pokretanje: [CleanMic/INSTALL.md](CleanMic/INSTALL.md).
 Snimanje → transkript → izvještaj: [CleanMic/TRANSCRIBE.md](CleanMic/TRANSCRIBE.md).
 

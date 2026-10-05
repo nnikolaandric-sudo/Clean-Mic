@@ -4,7 +4,8 @@ Radi na macOS 13 (Ventura) i novijem, Apple Silicon i Intel (universal).
 
 ## 1. Preuzmi i instaliraj
 
-1. Preuzmi `CleanMic-<verzija>.dmg` sa stranice **Releases** na GitHubu.
+1. Preuzmi `CleanMic-<verzija>.dmg` sa
+   [stranice Releases](https://github.com/nnikolaandric-sudo/Clean-Mic/releases/latest).
 2. Otvori DMG i prevuci **CleanMic** u **Applications**.
 
 ## 2. Prvo pokretanje (jednom po Macu)
@@ -54,11 +55,11 @@ Applications, pa ponovi korak 2. Podešavanja i ključ ostaju.
 Dovoljni su Command Line Tools (`xcode-select --install`), bez punog Xcode-a.
 
 ```bash
-git clone --recurse-submodules <repo-url>
+git clone --recurse-submodules https://github.com/nnikolaandric-sudo/Clean-Mic.git
 ```
 
 ```bash
-./CleanMic/scripts/make-dmg.sh
+cd Clean-Mic && ./CleanMic/scripts/make-dmg.sh
 ```
 
 Rezultat: `CleanMic/dist/CleanMic-<verzija>.dmg`. Prvi build preuzima RNNoise
