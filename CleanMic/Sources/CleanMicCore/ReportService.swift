@@ -1,6 +1,7 @@
 import Foundation
 
-/// Izvještaj iz transkripta preko OpenRouter /chat/completions (jeftin LLM).
+/// Izvještaj iz transkripta preko OpenRouter /chat/completions.
+/// Model se bira u Podešavanjima; default je `OpenRouterConfig.reportModelDefault`.
 /// Izlaz: `<ime>.izvjestaj.md` pored snimka — Sažetak, Ključne tačke, Akcije, pa puni transkript.
 ///
 /// Šta je ovdje popravljeno:
@@ -211,7 +212,7 @@ public enum ReportService {
             let notes: [String] = try Parallel.map(count: chunks.count, maxConcurrent: maxConcurrentChunks) { i in
                 let (text, used) = try chat(system: system,
                                             user: notesPrompt(chunk: chunks[i], index: i + 1, total: chunks.count),
-                                            preferredModel: model, apiKey: key, maxTokens: 2500)
+                                            preferredModel: model, apiKey: key, maxTokens: 4000)
                 DebugLog.log("  bilješke \(i + 1)/\(chunks.count): \(text.count) znakova (\(used))")
                 let n = done.withLock { (n: inout Int) -> Int in n += 1; return n }
                 progress?("bilješke", n, chunks.count)
@@ -225,7 +226,7 @@ public enum ReportService {
         progress?("sažetak", 0, 1)
         let (raw, used) = try chat(system: systemPrompt(l),
                                    user: finalPrompt(l, material: material, materialTitle: materialTitle, words: words),
-                                   preferredModel: model, apiKey: key, maxTokens: 3000)
+                                   preferredModel: model, apiKey: key, maxTokens: 6000)
         modelUsed = used
         let summary = cleanSummary(raw, labels: l)
         guard !summary.isEmpty else { throw ReportError.emptyResponse(used) }
@@ -251,7 +252,7 @@ public enum ReportService {
     /// Proba izabrani model, pa ostale sa liste. Vraća (tekst, model koji je odgovorio).
     static func chat(system: String, user: String, preferredModel: String,
                      apiKey: String, maxTokens: Int) throws -> (String, String) {
-        let candidates = [preferredModel] + OpenRouterConfig.cheapReportModels.filter { $0 != preferredModel }
+        let candidates = [preferredModel] + OpenRouterConfig.fallbackReportModels.filter { $0 != preferredModel }
         var lastError: Error = ReportError.emptyResponse(preferredModel)
         for model in candidates {
             do {
@@ -351,7 +352,15 @@ public enum ReportService {
             let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             return body.isEmpty ? "" : "## \(l.summary)\n\(body)"
         }
-        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Neki modeli (GPT-6 Luna) ne ostave prazan red između sekcija.
+        var spaced: [String] = []
+        for line in lines {
+            if line.hasPrefix("## "), let last = spaced.last, !last.trimmingCharacters(in: .whitespaces).isEmpty {
+                spaced.append("")
+            }
+            spaced.append(line)
+        }
+        return spaced.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Tekst sekcije "## <name>" (bez naslova), ili nil ako je nema.

@@ -8,29 +8,57 @@ import Foundation
 ///   4. UserDefaults "openrouter_api_key" (GUI)
 public enum OpenRouterConfig {
     public static let transcribeModelDefault = "microsoft/mai-transcribe-2"
-    /// Jeftini modeli za izvještaj (redom po preporuci). Ako izabrani model
-    /// padne ili ga OpenRouter ukine, ReportService proba sljedeći sa liste.
-    /// Provjereno na openrouter.ai/api/v1/models 05.10.2026 —
-    /// google/gemini-flash-1.5-8b više ne postoji, zamijenjen sa 2.5-flash-lite.
-    public static let cheapReportModels = [
+    public struct ReportModelOption: Hashable {
+        public let id: String
+        public let name: String
+    }
+
+    /// Modeli ponuđeni u Podešavanjima (prvi je default). Bilo koji drugi
+    /// OpenRouter model se može upisati ručno — vidi `OpenRouterClient.modelInfo`.
+    /// Svi ID-jevi provjereni na openrouter.ai/api/v1/models 05.10.2026.
+    public static let reportModelOptions = [
+        ReportModelOption(id: "openai/gpt-6-luna", name: "GPT-6 Luna"),
+        ReportModelOption(id: "openai/gpt-6-luna-pro", name: "GPT-6 Luna Pro"),
+        ReportModelOption(id: "openai/gpt-6-sol", name: "GPT-6 Sol"),
+        ReportModelOption(id: "anthropic/claude-haiku-4.5", name: "Claude Haiku 4.5"),
+        ReportModelOption(id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite"),
+        ReportModelOption(id: "deepseek/deepseek-chat", name: "DeepSeek Chat"),
+        ReportModelOption(id: "openai/gpt-4o-mini", name: "GPT-4o mini"),
+        ReportModelOption(id: "meta-llama/llama-3.1-8b-instruct", name: "Llama 3.1 8B"),
+    ]
+    public static let reportModelDefault = "openai/gpt-6-luna"
+    /// Default do verzije 1.1 — koristi se samo za jednokratni prelazak na novi.
+    public static let previousReportModelDefault = "deepseek/deepseek-chat"
+
+    /// Ako izabrani model ne odgovori, ReportService proba ove redom. Samo jeftini
+    /// modeli: rezerva ne smije tiho napraviti skup izvještaj.
+    public static let fallbackReportModels = [
+        "openai/gpt-6-luna",
         "deepseek/deepseek-chat",
         "openai/gpt-4o-mini",
         "google/gemini-2.5-flash-lite",
-        "meta-llama/llama-3.1-8b-instruct",
     ]
-    public static let reportModelDefault = "deepseek/deepseek-chat"
 
-    /// Sačuvani izbor može biti model koji više ne postoji — vrati ga na default.
+    /// Modeli koje OpenRouter više ne nudi (sačuvani izbor se vraća na default).
+    static let removedReportModels: Set<String> = ["google/gemini-flash-1.5-8b"]
+
+    /// Prazan ili ukinut model → default; sve ostalo (i ručno upisan ID) ostaje.
     public static func normalizedReportModel(_ model: String?) -> String {
-        guard let m = model?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty else {
+        guard let m = model?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty,
+              !removedReportModels.contains(m) else {
             return reportModelDefault
         }
-        return cheapReportModels.contains(m) ? m : reportModelDefault
+        return m
+    }
+
+    public static func reportModelName(_ id: String) -> String {
+        reportModelOptions.first(where: { $0.id == id })?.name ?? id
     }
 
     public static let transcriptionURL = URL(string: "https://openrouter.ai/api/v1/audio/transcriptions")!
     public static let chatURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     public static let keyInfoURL = URL(string: "https://openrouter.ai/api/v1/key")!
+    public static let modelsURL = URL(string: "https://openrouter.ai/api/v1/models")!
 
     /// Cijena transkripcije — izmjereno iz usage polja: $0.00456 za 164 s audija.
     public static let transcribeUSDPerHour = 0.10

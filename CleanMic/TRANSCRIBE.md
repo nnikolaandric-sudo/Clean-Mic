@@ -1,8 +1,8 @@
 # CleanMic — Snimanje → Transkripcija → Izvještaj
 
 Snimak (očišćen RNNoise-om) ide na OpenRouter **`microsoft/mai-transcribe-2`**
-(transkript), a zatim jeftin model (**`deepseek/deepseek-chat`**) pravi izvještaj:
-Sažetak + Ključne tačke + Akcije, pa puni transkript.
+(transkript), a zatim **`openai/gpt-6-luna`** (GPT-6 Luna, default — može se
+promijeniti) pravi izvještaj: Sažetak + Ključne tačke + Akcije, pa puni transkript.
 
 ## Kako radi
 
@@ -20,7 +20,8 @@ Sažetak + Ključne tačke + Akcije, pa puni transkript.
   govori vraća prazan tekst i ne obara cijeli transkript.
 - **Izvještaj**: model piše samo sažetak; transkript se dodaje lokalno, cijeli.
   Transkript preko ~45.000 znakova ide dio po dio (bilješke → završni
-  izvještaj). Ako izabrani model padne, proba se sljedeći sa liste.
+  izvještaj). Ako izabrani model ne odgovori, proba se jeftin rezervni
+  (GPT-6 Luna, DeepSeek Chat, GPT-4o mini, Gemini 2.5 Flash Lite).
 
 ## Ključ
 
@@ -69,8 +70,10 @@ Ključ se unosi jednom po Macu — ne putuje sa aplikacijom.
 # Samo izvještaj iz postojećeg transkripta (ne naplaćuje transkripciju ponovo):
 ./CleanMic/bin/cleanmic-cli report sastanak.transcript.txt --language sr
 
-# Drugi model za izvještaj:
-./CleanMic/bin/cleanmic-cli report sastanak.transcript.txt --report-model openai/gpt-4o-mini
+# Drugi model za izvještaj (bilo koji OpenRouter ID):
+./CleanMic/bin/cleanmic-cli models                 # ponuđeni modeli sa cijenama
+./CleanMic/bin/cleanmic-cli models claude          # pretraga svih modela na OpenRouteru
+./CleanMic/bin/cleanmic-cli report sastanak.transcript.txt --report-model anthropic/claude-haiku-4.5
 
 # Offline denoise postojećeg WAV-a:
 ./CleanMic/bin/cleanmic-cli process /tmp/raw.wav /tmp/clean.wav --mode balanced
@@ -102,16 +105,37 @@ brišu se nakon obrade.
   `CLEANMIC_DEBUG=1 CleanMic.app/Contents/MacOS/CleanMicApp` — ispisuje
   događaje prozora i aktivacije.
 
+## Modeli
+
+**Transkripcija:** `microsoft/mai-transcribe-2`.
+
+**Izvještaj** — bira se u **Podešavanja → Transkript → Model za izvještaj**:
+
+| Model | ID | Cijena (ulaz / izlaz po milion tokena) |
+|-------|----|----------------------------------------|
+| **GPT-6 Luna** (default) | `openai/gpt-6-luna` | $0.10 / $0.50 |
+| GPT-6 Luna Pro | `openai/gpt-6-luna-pro` | $0.10 / $0.50 |
+| GPT-6 Sol | `openai/gpt-6-sol` | $2.00 / $10.00 |
+| Claude Haiku 4.5 | `anthropic/claude-haiku-4.5` | $1.00 / $5.00 |
+| Gemini 2.5 Flash Lite | `google/gemini-2.5-flash-lite` | $0.10 / $0.40 |
+| DeepSeek Chat | `deepseek/deepseek-chat` | $0.26 / $1.03 |
+| GPT-4o mini | `openai/gpt-4o-mini` | $0.15 / $0.60 |
+| Llama 3.1 8B | `meta-llama/llama-3.1-8b-instruct` | $0.05 / $0.08 |
+
+Cijene su sa OpenRoutera na dan 05.10.2026; trenutne: `cleanmic-cli models`.
+
+**Drugi model…** u istom meniju prima bilo koji ID sa openrouter.ai/models.
+„Provjeri i sačuvaj" prvo potvrdi da model postoji i pokaže mu cijenu — pogrešno
+upisan ID se ne čuva. Polje „Koristi se" uvijek pokazuje model koji je stvarno aktivan.
+
+Ko je do verzije 1.1 bio na starom defaultu (`deepseek/deepseek-chat`), pri prvom
+pokretanju 1.2 prelazi na GPT-6 Luna. Kasniji ručni izbor se ne dira.
+
 ## Trošak (izmjereno 05.10.2026)
 
 - `microsoft/mai-transcribe-2`: **$0.10 po satu** audija ($0.0153 za 9 min)
-- `deepseek/deepseek-chat`: ispod jednog centa po izvještaju, i za sat transkripta
-
-## Modeli za izvještaj
-
-`deepseek/deepseek-chat` (default), `openai/gpt-4o-mini`,
-`google/gemini-2.5-flash-lite`, `meta-llama/llama-3.1-8b-instruct`.
-`google/gemini-flash-1.5-8b` je uklonjen — OpenRouter ga više ne nudi.
+- `openai/gpt-6-luna`: oko **pola centa** za izvještaj iz transkripta od sat
+  vremena (≈21.000 tokena ulaza, ≈5.500 izlaza); kratki snimci ispod desetine centa
 
 ## Privatnost
 

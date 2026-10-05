@@ -10,7 +10,7 @@ struct SettingsView: View {
             transcript.tabItem { Label("Transkript", systemImage: "text.bubble") }
             about.tabItem { Label("O aplikaciji", systemImage: "info.circle") }
         }
-        .frame(width: 520, height: 440)
+        .frame(width: 540, height: 620)
         .background(FrontWindow())
     }
 
@@ -91,8 +91,32 @@ struct SettingsView: View {
                         Text(option.name).tag(option.code)
                     }
                 }
-                Picker("Model za izvještaj", selection: Binding(get: { model.reportModel }, set: { model.setReportModel($0) })) {
-                    ForEach(model.reportModelOptions, id: \.self) { Text($0).tag($0) }
+                Picker("Model za izvještaj", selection: Binding(get: { model.reportModelPickerValue },
+                                                               set: { model.pickReportModel($0) })) {
+                    ForEach(model.reportModelOptions, id: \.id) { option in
+                        Text(option.id == OpenRouterConfig.reportModelDefault ? "\(option.name) (preporučeno)" : option.name)
+                            .tag(option.id)
+                    }
+                    Divider()
+                    Text("Drugi model…").tag(AppModel.customModelTag)
+                }
+                if model.customModelMode {
+                    HStack {
+                        TextField("ID sa openrouter.ai/models, npr. anthropic/claude-haiku-4.5", text: $model.customModelInput)
+                            .textFieldStyle(.roundedBorder)
+                            .labelsHidden()
+                            .onSubmit { model.applyCustomReportModel() }
+                        Button("Provjeri i sačuvaj") { model.applyCustomReportModel() }
+                    }
+                    if !model.modelCheckStatus.isEmpty {
+                        Text(model.modelCheckStatus)
+                            .font(.caption)
+                            .foregroundStyle(model.modelCheckStatus.hasPrefix("✗") ? Color.red : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                LabeledContent("Koristi se") {
+                    Text(model.reportModel).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 LabeledContent("Model za transkript") {
                     Text(model.transcribeModel).foregroundStyle(.secondary)

@@ -152,10 +152,24 @@ public enum SelfTest {
             return (en.summary == "Summary" && auto.summary == "Sažetak", "en=\(en.summary) auto=\(auto.summary)")
         }
 
-        check("Modeli: ukinuti model se vraća na default") {
-            let m = OpenRouterConfig.normalizedReportModel("google/gemini-flash-1.5-8b")
-            let keep = OpenRouterConfig.normalizedReportModel("openai/gpt-4o-mini")
-            return (m == OpenRouterConfig.reportModelDefault && keep == "openai/gpt-4o-mini", "\(m), \(keep)")
+        check("Modeli: default GPT-6 Luna, ukinuti → default, ručni ID ostaje") {
+            let removed = OpenRouterConfig.normalizedReportModel("google/gemini-flash-1.5-8b")
+            let custom = OpenRouterConfig.normalizedReportModel("  neki/novi-model ")
+            let empty = OpenRouterConfig.normalizedReportModel("")
+            let ok = OpenRouterConfig.reportModelDefault == "openai/gpt-6-luna"
+                && OpenRouterConfig.transcribeModelDefault == "microsoft/mai-transcribe-2"
+                && removed == OpenRouterConfig.reportModelDefault && empty == OpenRouterConfig.reportModelDefault
+                && custom == "neki/novi-model"
+                && OpenRouterConfig.reportModelOptions.first?.id == OpenRouterConfig.reportModelDefault
+                && !OpenRouterConfig.fallbackReportModels.contains("openai/gpt-6-sol")
+            return (ok, "default=\(OpenRouterConfig.reportModelDefault) ukinut→\(removed) ručni→\(custom)")
+        }
+
+        check("Izvještaj: prazan red između sekcija i kad ga model izostavi") {
+            let l = ReportService.labels(language: "sr")
+            let cleaned = ReportService.cleanSummary("## Sažetak\nTekst.\n## Ključne tačke\n- A\n## Akcije / sljedeći koraci\n- B", labels: l)
+            return (cleaned == "## Sažetak\nTekst.\n\n## Ključne tačke\n- A\n\n## Akcije / sljedeći koraci\n- B",
+                    cleaned.replacingOccurrences(of: "\n", with: "⏎"))
         }
 
         check("OpenRouter greške: čitljiva poruka") {

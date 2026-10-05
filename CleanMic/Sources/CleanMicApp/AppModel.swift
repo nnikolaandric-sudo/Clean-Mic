@@ -71,6 +71,10 @@ final class AppModel: ObservableObject {
     @Published var transcribeLanguage = "sr"
     @Published var autoTranscribe = true
     @Published var reportModel = OpenRouterConfig.reportModelDefault
+    /// "Drugi model…" u Podešavanjima: ručno upisan OpenRouter ID.
+    @Published var customModelMode = false
+    @Published var customModelInput = ""
+    @Published var modelCheckStatus = ""
     @Published var launchAtLogin = false
     @Published var saveFolder: URL = AppModel.defaultSaveFolder
 
@@ -78,7 +82,8 @@ final class AppModel: ObservableObject {
     let languageOptions: [(code: String, name: String)] = [
         ("auto", "Automatski"), ("sr", "Srpski"), ("hr", "Hrvatski"), ("bs", "Bosanski"), ("en", "Engleski"),
     ]
-    let reportModelOptions = OpenRouterConfig.cheapReportModels
+    let reportModelOptions = OpenRouterConfig.reportModelOptions
+    static let customModelTag = "__custom__"
 
     private var session: RecordingSession?
     private var pollTimer: Timer?
@@ -96,7 +101,18 @@ final class AppModel: ObservableObject {
         selectedDeviceUID = defaults.string(forKey: "inputDeviceUID")
         autoTranscribe = defaults.object(forKey: "autoTranscribe") as? Bool ?? true
         transcribeLanguage = defaults.string(forKey: "transcribeLanguage") ?? "sr"
+        // v1.2: default za izvještaj je GPT-6 Luna. Ko je ostao na starom defaultu
+        // prelazi jednom; izbor napravljen poslije toga se poštuje.
+        if defaults.integer(forKey: "reportModelMigration") < 2 {
+            let stored = defaults.string(forKey: "reportModel")
+            if stored == nil || stored == OpenRouterConfig.previousReportModelDefault {
+                defaults.set(OpenRouterConfig.reportModelDefault, forKey: "reportModel")
+            }
+            defaults.set(2, forKey: "reportModelMigration")
+        }
         reportModel = OpenRouterConfig.normalizedReportModel(defaults.string(forKey: "reportModel"))
+        customModelMode = !reportModelOptions.contains(where: { $0.id == reportModel })
+        customModelInput = customModelMode ? reportModel : ""
         if let path = defaults.string(forKey: "saveFolder"), !path.isEmpty {
             saveFolder = URL(fileURLWithPath: path, isDirectory: true)
         }
@@ -465,6 +481,45 @@ final class AppModel: ObservableObject {
     func setReportModel(_ model: String) {
         reportModel = model
         defaults.set(model, forKey: "reportModel")
+    }
+
+    var reportModelPickerValue: String {
+        customModelMode ? Self.customModelTag : reportModel
+    }
+
+    func pickReportModel(_ value: String) {
+        modelCheckStatus = ""
+        if value == Self.customModelTag {
+            customModelMode = true
+        } else {
+            customModelMode = false
+            setReportModel(value)
+        }
+    }
+
+    /// Ručno upisan model se čuva tek kad se potvrdi da postoji na OpenRouteru —
+    /// greška u kucanju bi inače izašla na vidjelo tek nakon snimljenog sastanka.
+    func applyCustomReportModel() {
+        let id = customModelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else {
+            modelCheckStatus = "Upiši ID modela, npr. anthropic/claude-haiku-4.5"
+            return
+        }
+        modelCheckStatus = "Provjeravam…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try OpenRouterClient.modelInfo(id: id) }
+            Task { @MainActor in
+                switch result {
+                case .success(let info?):
+                    self.setReportModel(info.id)
+                    self.modelCheckStatus = "✓ Sačuvano: \(info.summary)"
+                case .success(nil):
+                    self.modelCheckStatus = "✗ Model „\(id)” ne postoji na OpenRouteru. I dalje se koristi \(self.reportModel)."
+                case .failure(let error):
+                    self.modelCheckStatus = "✗ \(ErrorText.describe(error))"
+                }
+            }
+        }
     }
 
     func setAutoTranscribe(_ on: Bool) {

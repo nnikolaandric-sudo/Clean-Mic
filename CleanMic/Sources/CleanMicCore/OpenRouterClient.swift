@@ -54,15 +54,17 @@ public enum OpenRouterClient {
         return try send(req, apiKey: apiKey, timeout: timeout)
     }
 
-    public static func getJSON(url: URL, apiKey: String, timeout: TimeInterval) throws -> [String: Any] {
+    public static func getJSON(url: URL, apiKey: String?, timeout: TimeInterval) throws -> [String: Any] {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         return try send(req, apiKey: apiKey, timeout: timeout)
     }
 
-    private static func send(_ request: URLRequest, apiKey: String, timeout: TimeInterval) throws -> [String: Any] {
+    private static func send(_ request: URLRequest, apiKey: String?, timeout: TimeInterval) throws -> [String: Any] {
         var req = request
-        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let apiKey, !apiKey.isEmpty {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         req.setValue("CleanMic (macOS)", forHTTPHeaderField: "HTTP-Referer")
         req.setValue("CleanMic", forHTTPHeaderField: "X-Title")
         req.timeoutInterval = timeout
@@ -137,5 +139,52 @@ public enum OpenRouterClient {
                        usageUSD: num("usage"),
                        limitUSD: num("limit"),
                        remainingUSD: num("limit_remaining"))
+    }
+
+    // MARK: - Modeli
+
+    public struct ModelInfo {
+        public let id: String
+        public let name: String
+        public let contextLength: Int?
+        /// USD po milion tokena.
+        public let inputPerM: Double?
+        public let outputPerM: Double?
+
+        public var summary: String {
+            var parts = [name]
+            if let i = inputPerM, let o = outputPerM {
+                parts.append(String(format: "$%.2f / $%.2f po milion tokena (ulaz / izlaz)", i, o))
+            }
+            if let c = contextLength { parts.append("kontekst \(c / 1000)k") }
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    /// Javna lista chat modela (ne treba ključ). Transkripcijski modeli nisu na njoj.
+    public static func listModels() throws -> [ModelInfo] {
+        let json = try getJSON(url: OpenRouterConfig.modelsURL, apiKey: nil, timeout: 30)
+        guard let data = json["data"] as? [[String: Any]] else {
+            throw OpenRouterError.badResponse("lista modela nema 'data'")
+        }
+        func perM(_ value: Any?) -> Double? {
+            guard let s = value as? String, let d = Double(s) else { return nil }
+            return d * 1_000_000
+        }
+        return data.compactMap { m in
+            guard let id = m["id"] as? String else { return nil }
+            let pricing = m["pricing"] as? [String: Any]
+            return ModelInfo(id: id,
+                             name: (m["name"] as? String) ?? id,
+                             contextLength: (m["context_length"] as? NSNumber)?.intValue,
+                             inputPerM: perM(pricing?["prompt"]),
+                             outputPerM: perM(pricing?["completion"]))
+        }
+    }
+
+    /// nil ako model sa tim ID-jem ne postoji na OpenRouteru.
+    public static func modelInfo(id: String) throws -> ModelInfo? {
+        let wanted = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try listModels().first(where: { $0.id == wanted })
     }
 }

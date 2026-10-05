@@ -23,6 +23,8 @@ func printUsage() {
                                                    (ne naplaćuje transkripciju ponovo)
       cleanmic-cli set-key <OPENROUTER_API_KEY>  — sačuvaj ključ u ~/.config/cleanmic/openrouter_key
       cleanmic-cli check-key                     — provjeri da li ključ radi
+      cleanmic-cli models [tekst]                — modeli za izvještaj (ponuđeni, ili pretraga
+                                                   svih na OpenRouteru: cleanmic-cli models luna)
       cleanmic-cli selftest                      — offline provjere (bez mikrofona i mreže)
       cleanmic-cli test-rings                    — stress test RingBuffer
       cleanmic-cli help
@@ -32,7 +34,7 @@ func printUsage() {
       --language sr             hint za jezik (sr, hr, bs, en; default auto)
       --transcribe-model MODEL  default: \(OpenRouterConfig.transcribeModelDefault)
       --report-model MODEL      default: \(OpenRouterConfig.reportModelDefault)
-                                ostali: \(OpenRouterConfig.cheapReportModels.dropFirst().joined(separator: ", "))
+                                ili bilo koji OpenRouter ID — vidi: cleanmic-cli models
       --no-report               samo transkript, bez izvještaja
       --yes, -y                 bez pitanja potvrdi transkripciju snimka dužeg od 1 h
       --api-key KEY             eksplicitni ključ (inače OPENROUTER_API_KEY env / config fajl)
@@ -127,6 +129,8 @@ case "set-key":
     print("   Hint: \(OpenRouterConfig.storedKeyHint)")
 case "check-key":
     runCheckKey()
+case "models":
+    runModels(filter: positionals().first)
 case "record":
     let r = recordArgs(defaultPrefix: "cleanmic_raw")
     runRecordRaw(seconds: r.seconds, outputPath: r.path)
@@ -410,6 +414,35 @@ func runCheckKey() {
     do {
         let info = try OpenRouterClient.checkKey(key)
         print("✅ Ključ radi — \(info.summary)")
+    } catch {
+        print("❌ \(error)")
+        exit(1)
+    }
+}
+
+/// Bez filtera: ponuđeni modeli sa cijenama. Sa filterom: pretraga svih modela na OpenRouteru.
+func runModels(filter: String?) {
+    do {
+        let all = try OpenRouterClient.listModels()
+        let shown: [OpenRouterClient.ModelInfo]
+        if let f = filter?.lowercased(), !f.isEmpty {
+            shown = all.filter { ($0.id + " " + $0.name).lowercased().contains(f) }.sorted { $0.id < $1.id }
+            print("🔎 Modeli na OpenRouteru koji sadrže „\(f)” (\(shown.count) od \(all.count)):\n")
+        } else {
+            shown = OpenRouterConfig.reportModelOptions.compactMap { option in all.first(where: { $0.id == option.id }) }
+            print("📋 Modeli za izvještaj (default: \(OpenRouterConfig.reportModelDefault))")
+            print("   Transkripcija: \(OpenRouterConfig.transcribeModelDefault)\n")
+            let missing = OpenRouterConfig.reportModelOptions.filter { o in !all.contains(where: { $0.id == o.id }) }
+            for m in missing { print("  ⚠️  \(m.id) više nije na OpenRouteru") }
+        }
+        for m in shown {
+            let price = (m.inputPerM != nil && m.outputPerM != nil)
+                ? String(format: "$%.2f / $%.2f po M tokena", m.inputPerM!, m.outputPerM!) : "cijena nepoznata"
+            let mark = m.id == OpenRouterConfig.reportModelDefault ? "★" : " "
+            print("  \(mark) \(m.id.padding(toLength: 40, withPad: " ", startingAt: 0)) \(price)")
+        }
+        if shown.isEmpty { print("  (nema rezultata)") }
+        print("\nUpotreba: cleanmic-cli report <transkript.txt> --report-model <ID>")
     } catch {
         print("❌ \(error)")
         exit(1)
