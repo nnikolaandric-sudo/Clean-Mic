@@ -48,6 +48,12 @@ struct MenuBarView: View {
                 if let banner = model.banner {
                     BannerView(banner: banner) { model.banner = nil }
                 }
+                if let update = model.availableUpdate {
+                    updateCard(update)
+                }
+                if AppVersion.runsFromDiskImage {
+                    diskImageCard
+                }
                 if model.micPermission == "denied" || model.micPermission == "restricted" {
                     permissionCard
                 }
@@ -102,6 +108,44 @@ struct MenuBarView: View {
                 StatusChip(text: "Obrada", color: .blue, pulsing: true)
             } else {
                 StatusChip(text: "Spreman", color: .green)
+            }
+        }
+    }
+
+    private func updateCard(_ update: UpdateInfo) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Nova verzija: CleanMic \(update.version)", systemImage: "arrow.down.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("Imaš \(AppVersion.current). Preuzmi DMG, zatvori CleanMic i prevuci novu verziju u Applications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Preuzmi") { model.downloadUpdate() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Šta je novo") { model.openUpdatePage() }
+                    Spacer()
+                    Button("Kasnije") { model.postponeUpdate() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private var diskImageCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("CleanMic radi sa diska, nije instaliran", systemImage: "externaldrive.fill.badge.exclamationmark")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+                Text("Prevuci CleanMic iz prozora diska u Applications, pa ga pokreni odatle i izbaci disk. Inače nestaje kad se disk izbaci, ne pokreće se pri prijavi i ne može se ažurirati.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -152,11 +152,32 @@ struct SettingsView: View {
         VStack(spacing: 12) {
             AppGlyph(size: 64)
             Text(model.versionText).font(.title3.weight(.semibold))
+            VStack(spacing: 6) {
+                HStack {
+                    Button(model.isCheckingUpdate ? "Provjeravam…" : "Provjeri ažuriranja") {
+                        model.checkForUpdates(manual: true)
+                    }
+                    .disabled(model.isCheckingUpdate)
+                    if model.availableUpdate != nil {
+                        Button("Preuzmi \(model.availableUpdate?.version ?? "")") { model.downloadUpdate() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+                if !model.updateStatus.isEmpty {
+                    Text(model.updateStatus).font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("Automatski provjeravaj ažuriranja", isOn: Binding(
+                    get: { model.autoCheckUpdates },
+                    set: { model.setAutoCheckUpdates($0) }
+                ))
+                .font(.callout)
+            }
             VStack(alignment: .leading, spacing: 10) {
                 Label("Čišćenje zvuka (RNNoise) radi lokalno na ovom Macu.", systemImage: "lock.shield.fill")
                 Label("Transkripcija i izvještaj šalju snimak na OpenRouter — samo kad je uključeno automatski ili kad klikneš Transkribuj.",
                       systemImage: "icloud.and.arrow.up")
                 Label("Snimci, transkripti i izvještaji ostaju u tvom folderu za snimke.", systemImage: "folder")
+                Label("Provjera ažuriranja samo pita GitHub koja je zadnja verzija; ne šalje ništa o tebi ni o snimcima.", systemImage: "arrow.triangle.2.circlepath")
             }
             .font(.callout)
             .frame(maxWidth: 420, alignment: .leading)

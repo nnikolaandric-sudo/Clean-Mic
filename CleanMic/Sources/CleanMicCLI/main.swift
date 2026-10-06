@@ -30,6 +30,7 @@ func printUsage() {
       cleanmic-cli check-key                     — provjeri da li ključ radi
       cleanmic-cli models [tekst]                — modeli za izvještaj (ponuđeni, ili pretraga
                                                    svih na OpenRouteru: cleanmic-cli models luna)
+      cleanmic-cli check-update [--current X.Y.Z] — da li na GitHubu postoji novija verzija
       cleanmic-cli selftest                      — offline provjere (bez mikrofona i mreže)
       cleanmic-cli test-rings                    — stress test RingBuffer
       cleanmic-cli help
@@ -70,7 +71,7 @@ if args.isEmpty || args.first == "help" || args.first == "--help" || args.first 
 
 /// Flagovi koji uzimaju vrijednost — da ih pozicioni argumenti preskoče.
 let valueFlags: Set<String> = ["--mode", "-m", "--language", "--lang", "-l", "--transcribe-model", "--model",
-                               "--report-model", "--api-key", "--audio", "--device", "--system-audio"]
+                               "--report-model", "--api-key", "--audio", "--device", "--system-audio", "--current"]
 
 func flagValue(_ names: [String]) -> String? {
     for n in names {
@@ -172,6 +173,24 @@ case "report":
         exit(1)
     }
     runReportOnly(transcriptPath: txt, opts: transcribeOptsFromArgs())
+case "check-update":
+    let current = flagValue(["--current"]) ?? AppVersion.current
+    do {
+        guard let latest = try UpdateChecker.latest() else {
+            print("Na GitHubu još nema izdanja.")
+            exit(0)
+        }
+        print("Najnovije izdanje: \(latest.version)  (\(latest.pageURL.absoluteString))")
+        if let dmg = latest.downloadURL { print("DMG: \(dmg.absoluteString)") }
+        if UpdateChecker.isNewer(latest.version, than: current) {
+            print("⬆️  Novije od \(current).")
+        } else {
+            print("✅ \(current) je najnovija verzija.")
+        }
+    } catch {
+        print("❌ \(error)")
+        exit(1)
+    }
 case "selftest":
     runSelfTest()
 case "test-rings":

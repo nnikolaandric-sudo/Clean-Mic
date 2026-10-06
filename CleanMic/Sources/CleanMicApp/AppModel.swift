@@ -48,6 +48,12 @@ final class AppModel: ObservableObject {
     @Published var devices: [AudioDevice] = []
     /// nil = sistemski zadani mikrofon (prati System Settings).
     @Published var selectedDeviceUID: String?
+    /// Novija verzija na GitHubu (nil = nema ili je korisnik odložio baš tu verziju).
+    @Published var availableUpdate: UpdateInfo?
+    @Published var isCheckingUpdate = false
+    /// Poruka poslije ručne provjere ("Imaš najnoviju verziju").
+    @Published var updateStatus = ""
+    @Published var autoCheckUpdates = true
     /// Zvuk iz računara (glasovi ostalih na sastanku): automatski kad su slušalice.
     @Published var systemAudioMode: SystemAudioMode = .auto
     /// Gdje trenutno izlazi zvuk — za poruku "slušalice → snimam i zvuk iz računara".
@@ -104,6 +110,7 @@ final class AppModel: ObservableObject {
         selectedMode = CleanMicMode(rawValue: defaults.object(forKey: "mode") as? Int ?? 1) ?? .balanced
         selectedDeviceUID = defaults.string(forKey: "inputDeviceUID")
         systemAudioMode = defaults.string(forKey: "systemAudioMode").flatMap { SystemAudioMode(rawValue: $0) } ?? .auto
+        autoCheckUpdates = defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true
         autoTranscribe = defaults.object(forKey: "autoTranscribe") as? Bool ?? true
         transcribeLanguage = defaults.string(forKey: "transcribeLanguage") ?? "sr"
         // v1.2: default za izvještaj je GPT-6 Luna. Ko je ostao na starom defaultu
@@ -135,6 +142,79 @@ final class AppModel: ObservableObject {
         deviceTimer = t
 
         AppDelegate.shutdown = { [weak self] in self?.shutdown() }
+        scheduleUpdateChecks()
+    }
+
+    // MARK: - Ažuriranje
+
+    /// Aplikacija nije u App Storeu, pa sama provjerava GitHub Releases: malo poslije
+    /// pokretanja i zatim svakih 6 h, ali ne češće od jednom na sat.
+    private func scheduleUpdateChecks() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            self?.checkForUpdates(manual: false)
+        }
+        let t = Timer(timeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkForUpdates(manual: false) }
+        }
+        RunLoop.main.add(t, forMode: .common)
+    }
+
+    func setAutoCheckUpdates(_ on: Bool) {
+        autoCheckUpdates = on
+        defaults.set(on, forKey: "autoCheckUpdates")
+        if on { checkForUpdates(manual: false) }
+    }
+
+    func checkForUpdates(manual: Bool) {
+        guard !isCheckingUpdate else { return }
+        if !manual {
+            guard autoCheckUpdates else { return }
+            let last = defaults.double(forKey: "lastUpdateCheck")
+            if Date().timeIntervalSince1970 - last < 3600 { return }
+        }
+        isCheckingUpdate = true
+        if manual { updateStatus = "Provjeravam…" }
+        let current = AppVersion.current
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try UpdateChecker.check(currentVersion: current) }
+            Task { @MainActor in
+                guard let self else { return }
+                self.isCheckingUpdate = false
+                switch result {
+                case .success(let update):
+                    self.defaults.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
+                    let skipped = self.defaults.string(forKey: "skippedUpdateVersion")
+                    if let update, manual || update.version != skipped {
+                        self.availableUpdate = update
+                        self.updateStatus = manual ? "Dostupna je verzija \(update.version)." : ""
+                    } else {
+                        self.availableUpdate = nil
+                        self.updateStatus = manual ? "Imaš najnoviju verziju (\(current))." : ""
+                    }
+                    DebugLog.log("ažuriranje: trenutna \(current), \(update.map { "dostupna \($0.version)" } ?? "nema novije")")
+                case .failure(let error):
+                    // Tiho kad je provjera automatska: nema interneta nije greška koju treba pokazati.
+                    self.updateStatus = manual ? "\(error)" : ""
+                    DebugLog.log("ažuriranje: provjera nije uspjela (\(error))")
+                }
+            }
+        }
+    }
+
+    func downloadUpdate() {
+        guard let update = availableUpdate else { return }
+        NSWorkspace.shared.open(update.openURL)
+    }
+
+    func openUpdatePage() {
+        guard let update = availableUpdate else { return }
+        NSWorkspace.shared.open(update.pageURL)
+    }
+
+    /// "Kasnije": ne smetaj za ovu verziju; nova verzija će opet pokazati karticu.
+    func postponeUpdate() {
+        if let update = availableUpdate { defaults.set(update.version, forKey: "skippedUpdateVersion") }
+        availableUpdate = nil
     }
 
     // MARK: - Uređaji

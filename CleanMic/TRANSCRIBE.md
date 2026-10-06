@@ -20,6 +20,11 @@ promijeniti) pravi izvještaj: Sažetak + Ključne tačke + Akcije, pa puni tran
   nakon instalacije/ažuriranja traje ~5 s (macOS provjerava dozvolu), zato to aplikacija
   odradi čim vidi slušalice, prije sastanka. Snima se SVE što računar pušta (i muzika,
   i zvuk obavijesti), ne samo aplikacija za sastanak.
+- **Ažuriranje.** CleanMic sam provjerava GitHub Releases (poslije pokretanja i svakih 6 h)
+  i pokaže karticu "Nova verzija" sa dugmetom **Preuzmi**; ručno: zupčanik → O aplikaciji →
+  Provjeri ažuriranja (tu se automatska provjera i gasi). Ne šalje ništa o tebi. Nema
+  tihog samoinstaliranja: preuzmi DMG, zatvori CleanMic i prevuci novu verziju u Applications
+  preko stare. Ako CleanMic radi direktno sa otvorenog diska, pokaže upozorenje da ga instaliraš.
 - **Promjena mikrofona usred snimanja** (slušalice, AirPods, dock, buđenje iz
   sleepa) ne prekida snimak — capture se sam ponovo podigne.
 - **Snimak duži od 1 h** se ne šalje sam: prvo se traži potvrda, uz procjenu

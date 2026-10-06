@@ -254,6 +254,40 @@ public enum SelfTest {
             return (a && !b && c && !d && !e, "auto/slušalice=\(a) auto/zvučnici=\(b) uvijek/zvučnici=\(c) nikad=\(d) uvijek/bez izlaza=\(e)")
         }
 
+        check("Ažuriranje: poređenje verzija (1.10.0 > 1.9.0, v-prefiks, kraća oznaka)") {
+            let a = UpdateChecker.isNewer("1.10.0", than: "1.9.0")
+            let b = UpdateChecker.isNewer("v1.3.0", than: "1.2.0")
+            let c = !UpdateChecker.isNewer("1.3", than: "1.3.0")
+            let d = !UpdateChecker.isNewer("1.2.0", than: "1.3.0")
+            let e = !UpdateChecker.isNewer("1.3.0", than: "1.3.0")
+            let f = UpdateChecker.isNewer("1.3.1", than: "1.3.0-beta")
+            let g = !UpdateChecker.isNewer("smeće", than: "1.3.0")
+            return (a && b && c && d && e && f && g, "\(a) \(b) \(c) \(d) \(e) \(f) \(g)")
+        }
+
+        check("Ažuriranje: izdanje sa GitHuba se čita, tuđi linkovi se odbacuju") {
+            let good: [String: Any] = [
+                "tag_name": "v1.4.0", "body": "Bilješke",
+                "html_url": "https://github.com/nnikolaandric-sudo/Clean-Mic/releases/tag/v1.4.0",
+                "assets": [
+                    ["name": "SHA256.txt", "browser_download_url": "https://github.com/x/SHA256.txt"],
+                    ["name": "CleanMic-1.4.0.dmg", "browser_download_url": "https://github.com/nnikolaandric-sudo/Clean-Mic/releases/download/v1.4.0/CleanMic-1.4.0.dmg"],
+                ],
+            ]
+            let evil: [String: Any] = [
+                "tag_name": "v9.9.9", "html_url": "https://evil.example.com/release",
+                "assets": [],
+            ]
+            let evilAsset: [String: Any] = [
+                "tag_name": "v9.9.9", "html_url": "https://github.com/a/b/releases/tag/v9.9.9",
+                "assets": [["name": "x.dmg", "browser_download_url": "http://github.com.evil.example/x.dmg"]],
+            ]
+            let info = UpdateChecker.parse(good)
+            let ok = info?.version == "1.4.0" && info?.downloadURL?.lastPathComponent == "CleanMic-1.4.0.dmg"
+                && UpdateChecker.parse(evil) == nil && UpdateChecker.parse(evilAsset)?.downloadURL == nil
+            return (ok, "verzija=\(info?.version ?? "-") dmg=\(info?.downloadURL?.lastPathComponent ?? "-")")
+        }
+
         return checks
     }
 
