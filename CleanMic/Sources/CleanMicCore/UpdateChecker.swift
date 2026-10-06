@@ -8,7 +8,12 @@ public struct UpdateInfo: Equatable, Sendable {
     public let pageURL: URL
     /// Direktan link na .dmg, ako izdanje ima jedan.
     public let downloadURL: URL?
+    /// Potpis DMG-a (`CleanMic-X.dmg.sig`). Bez njega se ne instalira sama, samo ručno.
+    public let signatureURL: URL?
     public let notes: String
+
+    /// Može li se instalirati automatski (ima DMG i potpis)?
+    public var isSelfInstallable: Bool { downloadURL != nil && signatureURL != nil }
 
     /// Šta se otvara u pregledniku kad korisnik klikne "Preuzmi".
     public var openURL: URL { downloadURL ?? pageURL }
@@ -68,22 +73,28 @@ public enum UpdateChecker {
 
     /// Iz JSON-a `releases/latest`. Linkove prihvata samo sa github.com preko https —
     /// odgovor se ne smije moći iskoristiti da korisnika pošalje negdje drugdje.
-    public static func parse(_ json: [String: Any]) -> UpdateInfo? {
+    public static func parse(_ json: [String: Any], allowLocalFiles: Bool = false) -> UpdateInfo? {
+        func trusted(_ url: URL) -> Bool { isTrusted(url) || (allowLocalFiles && url.isFileURL) }
         guard let tag = json["tag_name"] as? String, !components(tag).isEmpty,
               let page = (json["html_url"] as? String).flatMap(URL.init(string:)),
-              isTrusted(page) else { return nil }
+              trusted(page) else { return nil }
         var version = tag
         if version.hasPrefix("v") || version.hasPrefix("V") { version.removeFirst() }
 
         var dmg: URL?
+        var dmgName: String?
+        var assetURLs: [String: URL] = [:]
         for asset in (json["assets"] as? [[String: Any]]) ?? [] {
-            guard let name = asset["name"] as? String, name.lowercased().hasSuffix(".dmg"),
+            guard let name = asset["name"] as? String,
                   let url = (asset["browser_download_url"] as? String).flatMap(URL.init(string:)),
-                  isTrusted(url) else { continue }
-            dmg = url
-            break
+                  trusted(url) else { continue }
+            assetURLs[name] = url
+            if dmg == nil, name.lowercased().hasSuffix(".dmg") { dmg = url; dmgName = name }
         }
-        return UpdateInfo(version: version, pageURL: page, downloadURL: dmg, notes: (json["body"] as? String) ?? "")
+        // Potpis mora biti uz baš taj DMG: CleanMic-X.dmg → CleanMic-X.dmg.sig
+        let signature = dmgName.flatMap { assetURLs[$0 + ".sig"] }
+        return UpdateInfo(version: version, pageURL: page, downloadURL: dmg, signatureURL: signature,
+                          notes: (json["body"] as? String) ?? "")
     }
 
     static func isTrusted(_ url: URL) -> Bool {
@@ -99,6 +110,15 @@ public enum UpdateChecker {
 
     /// Najnovije objavljeno izdanje (bez obzira na trenutnu verziju); nil ako ih još nema.
     public static func latest(timeout: TimeInterval = 10) throws -> UpdateInfo? {
+        // Za provjeru cijelog toka bez objave: CLEANMIC_UPDATE_FEED=/putanja/feed.json (isti oblik kao
+        // GitHub). Potpis se i tada obavezno provjerava, pa ovo ne može instalirati ništa nepotpisano.
+        if let feed = ProcessInfo.processInfo.environment["CLEANMIC_UPDATE_FEED"], !feed.isEmpty {
+            DebugLog.log("ažuriranje: feed iz \(feed)")
+            guard let data = FileManager.default.contents(atPath: feed),
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let info = parse(json, allowLocalFiles: true) else { throw UpdateError.badResponse }
+            return info
+        }
         guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else { throw UpdateError.badResponse }
         var req = URLRequest(url: url)
         req.timeoutInterval = timeout

@@ -5,10 +5,11 @@ CleanMic — instalacija
    ovaj disk. Ne pokreći CleanMic direktno sa diska: nestaje kad se disk izbaci,
    ne pokreće se pri prijavi i ne može se ažurirati.
 
-   Ažuriranje: CleanMic sam provjerava ima li nove verzije (zupčanik → O aplikaciji
-   → Provjeri ažuriranja). Kad je ima, pokaže karticu sa dugmetom "Preuzmi". Zatvori
-   CleanMic (zupčanik → Izađi), otvori novi DMG i prevuci CleanMic u Applications
-   preko stare verzije ("Replace"). Podešavanja i ključ ostaju.
+   Ažuriranje: CleanMic sam provjerava ima li nove verzije, preuzme je, provjeri
+   potpis i instalira kad ne snimaš (zupčanik → O aplikaciji; tu se i gasi). Ako
+   instalacija ostane ručna: zatvori CleanMic (zupčanik → Izađi), otvori novi DMG
+   i prevuci CleanMic u Applications preko stare verzije ("Replace"). Podešavanja
+   i ključ ostaju.
 
 2. Prvo pokretanje — aplikacija nije potpisana Apple Developer ID-om, pa je
    macOS blokira dok je jednom ručno ne odobriš:

@@ -171,6 +171,16 @@ struct SettingsView: View {
                     set: { model.setAutoCheckUpdates($0) }
                 ))
                 .font(.callout)
+                Toggle("Sama instaliraj ažuriranja (kad ne snimam)", isOn: Binding(
+                    get: { model.autoInstallUpdates },
+                    set: { model.setAutoInstallUpdates($0) }
+                ))
+                .font(.callout)
+                .disabled(!model.autoCheckUpdates)
+                Text("Preuzeto se provjerava potpisom izdanja; instalira se tek kad ne snimaš i ne radi izvještaj, pa se CleanMic sam restartuje.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 10) {
                 Label("Čišćenje zvuka (RNNoise) radi lokalno na ovom Macu.", systemImage: "lock.shield.fill")

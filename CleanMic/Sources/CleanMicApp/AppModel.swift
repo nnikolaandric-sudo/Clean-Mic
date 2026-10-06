@@ -15,6 +15,15 @@ struct RecordingInfo: Equatable {
     var reportURL: URL { URL(fileURLWithPath: base + ".izvjestaj.md") }
 }
 
+enum UpdatePhase: Equatable {
+    case idle
+    case downloading(Double)
+    /// Preuzeto i provjereno; čeka da aplikacija bude slobodna.
+    case ready
+    case installing
+    case failed(String)
+}
+
 enum Banner: Equatable {
     case info(String)
     case warning(String)
@@ -54,6 +63,9 @@ final class AppModel: ObservableObject {
     /// Poruka poslije ručne provjere ("Imaš najnoviju verziju").
     @Published var updateStatus = ""
     @Published var autoCheckUpdates = true
+    /// Sama preuzmi, provjeri potpis i instaliraj (tek kad ne snimaš i ne radi izvještaj).
+    @Published var autoInstallUpdates = true
+    @Published var updatePhase: UpdatePhase = .idle
     /// Zvuk iz računara (glasovi ostalih na sastanku): automatski kad su slušalice.
     @Published var systemAudioMode: SystemAudioMode = .auto
     /// Gdje trenutno izlazi zvuk — za poruku "slušalice → snimam i zvuk iz računara".
@@ -111,6 +123,9 @@ final class AppModel: ObservableObject {
         selectedDeviceUID = defaults.string(forKey: "inputDeviceUID")
         systemAudioMode = defaults.string(forKey: "systemAudioMode").flatMap { SystemAudioMode(rawValue: $0) } ?? .auto
         autoCheckUpdates = defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true
+        autoInstallUpdates = defaults.object(forKey: "autoInstallUpdates") as? Bool ?? true
+        DebugLog.log("pokrenuto: \(versionText), \(Bundle.main.bundlePath)")
+        DispatchQueue.global(qos: .utility).async { UpdateInstaller.cleanupLeftovers() }
         autoTranscribe = defaults.object(forKey: "autoTranscribe") as? Bool ?? true
         transcribeLanguage = defaults.string(forKey: "transcribeLanguage") ?? "sr"
         // v1.2: default za izvještaj je GPT-6 Luna. Ko je ostao na starom defaultu
@@ -187,6 +202,9 @@ final class AppModel: ObservableObject {
                     if let update, manual || update.version != skipped {
                         self.availableUpdate = update
                         self.updateStatus = manual ? "Dostupna je verzija \(update.version)." : ""
+                        if self.autoInstallUpdates, update.version != skipped, self.canSelfInstall {
+                            self.prepareUpdate()
+                        }
                     } else {
                         self.availableUpdate = nil
                         self.updateStatus = manual ? "Imaš najnoviju verziju (\(current))." : ""
@@ -199,6 +217,115 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func setAutoInstallUpdates(_ on: Bool) {
+        autoInstallUpdates = on
+        defaults.set(on, forKey: "autoInstallUpdates")
+        if on, availableUpdate != nil, canSelfInstall { prepareUpdate() }
+    }
+
+    /// Ima li novo izdanje potpis i može li se ova kopija sama zamijeniti?
+    var canSelfInstall: Bool {
+        guard let update = availableUpdate else { return false }
+        return update.isSelfInstallable && UpdateInstaller.cannotInstallReason() == nil
+    }
+
+    /// Zašto ažuriranje ostaje ručno (za karticu); nil kad može samo.
+    var selfInstallBlockedReason: String? {
+        guard let update = availableUpdate else { return nil }
+        if !update.isSelfInstallable { return "Ovo izdanje nije potpisano za automatsko ažuriranje" }
+        if let why = UpdateInstaller.cannotInstallReason() { return "Ne mogu se sama zamijeniti: \(why)" }
+        return nil
+    }
+
+    /// Ne diramo aplikaciju dok snima, sprema snimak ili radi transkript/izvještaj.
+    var isBusyForUpdate: Bool { isRecording || isStopping || isTranscribing }
+
+    /// Preuzmi, provjeri potpis i složi novu verziju pored stare. Sama instalacija tek kad je app slobodna.
+    func prepareUpdate() {
+        guard let update = availableUpdate, let dmg = update.downloadURL, let sig = update.signatureURL else { return }
+        switch updatePhase {
+        case .downloading, .installing: return
+        case .ready:
+            installWhenIdle()
+            return
+        case .idle, .failed: break
+        }
+        if let why = UpdateInstaller.cannotInstallReason() {
+            updatePhase = .failed("Ne mogu se sama zamijeniti: \(why)")
+            return
+        }
+        updatePhase = .downloading(0)
+        let current = AppVersion.current
+        let target = Bundle.main.bundleURL
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.cleanmic.app"
+        DebugLog.log("ažuriranje: preuzimam \(update.version)")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var lastPercent = -1
+            let result = Result {
+                try UpdateInstaller.prepare(dmg: dmg, signature: sig, version: update.version, currentVersion: current,
+                                            target: target, bundleID: bundleID) { p in
+                    let percent = Int(p * 100)
+                    guard percent != lastPercent else { return }
+                    lastPercent = percent
+                    Task { @MainActor in
+                        if case .downloading = self?.updatePhase { self?.updatePhase = .downloading(p) }
+                    }
+                }
+            }
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case .success(let staged):
+                    self.stagedUpdate = staged
+                    self.updatePhase = .ready
+                    DebugLog.log("ažuriranje: \(staged.version) preuzeto i provjereno (potpis, aplikacija)")
+                    self.installWhenIdle()
+                case .failure(let error):
+                    self.updatePhase = .failed("\(error)")
+                    DebugLog.log("ažuriranje: nije uspjelo (\(error))")
+                }
+            }
+        }
+    }
+
+    /// Instaliraj čim aplikacija nije zauzeta (provjerava svakih 10 s).
+    private func installWhenIdle() {
+        idleInstallTimer?.invalidate()
+        idleInstallTimer = nil
+        if !isBusyForUpdate {
+            installNow()
+            return
+        }
+        let t = Timer(timeInterval: 10, repeats: true) { [weak self] timer in
+            Task { @MainActor in
+                guard let self else { timer.invalidate(); return }
+                if !self.isBusyForUpdate {
+                    timer.invalidate()
+                    self.idleInstallTimer = nil
+                    self.installNow()
+                }
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        idleInstallTimer = t
+    }
+
+    private func installNow() {
+        guard let staged = stagedUpdate, !isBusyForUpdate else { return }
+        updatePhase = .installing
+        DebugLog.log("ažuriranje: instaliram \(staged.version) i restartujem")
+        do {
+            try UpdateInstaller.launchSwap(staged, pid: getpid(), relaunch: true)
+        } catch {
+            updatePhase = .failed("\(error)")
+            DebugLog.log("ažuriranje: zamjena nije pokrenuta (\(error))")
+            return
+        }
+        DebugLog.flush()
+        // Skript čeka da se ugasimo; kratka pauza da se log upiše.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { NSApplication.shared.terminate(nil) }
     }
 
     func downloadUpdate() {
@@ -215,6 +342,11 @@ final class AppModel: ObservableObject {
     func postponeUpdate() {
         if let update = availableUpdate { defaults.set(update.version, forKey: "skippedUpdateVersion") }
         availableUpdate = nil
+        idleInstallTimer?.invalidate()
+        idleInstallTimer = nil
+        if let staged = stagedUpdate { try? FileManager.default.removeItem(at: staged.stageDir) }
+        stagedUpdate = nil
+        updatePhase = .idle
     }
 
     // MARK: - Uređaji
@@ -254,6 +386,8 @@ final class AppModel: ObservableObject {
     }
 
     private var systemAudioPrimed = false
+    private var stagedUpdate: StagedUpdate?
+    private var idleInstallTimer: Timer?
 
     /// Prvo podizanje taba nakon instalacije traje ~5 s i tu macOS traži dozvolu. Radimo ga čim
     /// vidimo da će zvuk iz računara trebati, a ne tek kad počne sastanak (da se ne izgubi početak).

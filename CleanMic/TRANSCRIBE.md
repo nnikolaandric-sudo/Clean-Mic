@@ -20,11 +20,20 @@ promijeniti) pravi izvještaj: Sažetak + Ključne tačke + Akcije, pa puni tran
   nakon instalacije/ažuriranja traje ~5 s (macOS provjerava dozvolu), zato to aplikacija
   odradi čim vidi slušalice, prije sastanka. Snima se SVE što računar pušta (i muzika,
   i zvuk obavijesti), ne samo aplikacija za sastanak.
-- **Ažuriranje.** CleanMic sam provjerava GitHub Releases (poslije pokretanja i svakih 6 h)
-  i pokaže karticu "Nova verzija" sa dugmetom **Preuzmi**; ručno: zupčanik → O aplikaciji →
-  Provjeri ažuriranja (tu se automatska provjera i gasi). Ne šalje ništa o tebi. Nema
-  tihog samoinstaliranja: preuzmi DMG, zatvori CleanMic i prevuci novu verziju u Applications
-  preko stare. Ako CleanMic radi direktno sa otvorenog diska, pokaže upozorenje da ga instaliraš.
+- **Ažuriranje.** CleanMic sam provjerava GitHub Releases (poslije pokretanja i svakih 6 h).
+  Kad nađe novu verziju, **sam je preuzme, provjeri potpis izdanja i instalira** čim ne snimaš
+  i ne radi transkript/izvještaj (nikad usred posla), pa se restartuje. Ključ i podešavanja
+  ostaju. Ne šalje ništa o tebi. Zupčanik → O aplikaciji: *Provjeri ažuriranja*, te zasebno
+  gašenje automatske provjere i samoinstalacije (tada kartica nudi *Ažuriraj sada*).
+  - Svako izdanje je potpisano (Ed25519); ako se potpis ne poklapa, ništa se ne instalira.
+  - Stara verzija se zamjenjuje tek kad je nova preuzeta i provjerena; ako zamjena zakaže,
+    vraća se stara. Dnevnik: `~/Library/Logs/CleanMic/update.log`.
+  - Radi samo kad je CleanMic u Applications (ne direktno sa diska) i kad imaš pravo upisa
+    tamo; inače ostaje ručno (*Preuzmi*). Nakon svakog ažuriranja macOS može ponovo pitati
+    za dozvolu za mikrofon (novi potpis aplikacije).
+  - **Za izdavanje:** `./scripts/make-dmg.sh` potpiše DMG (`.dmg.sig`) ključem iz
+    `~/.config/cleanmic/update_signing_key` — **sačuvaj kopiju tog fajla**; bez njega postojeće
+    instalacije ne mogu primati automatska ažuriranja. Uz izdanje na GitHub idu **oba** fajla.
 - **Promjena mikrofona usred snimanja** (slušalice, AirPods, dock, buđenje iz
   sleepa) ne prekida snimak — capture se sam ponovo podigne.
 - **Snimak duži od 1 h** se ne šalje sam: prvo se traži potvrda, uz procjenu

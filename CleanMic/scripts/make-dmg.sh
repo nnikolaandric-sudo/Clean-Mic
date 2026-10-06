@@ -28,3 +28,14 @@ hdiutil create -volname "CleanMic $VERSION" -srcfolder "$STAGE" -ov -format UDZO
 
 echo "✅ $DMG ($(du -h "$DMG" | cut -f1 | tr -d ' '))"
 shasum -a 256 "$DMG"
+
+# Potpis za automatsko ažuriranje. Bez njega se izdanje instalira samo ručno.
+SIG="$DMG.sig"
+rm -f "$SIG"
+if [ -f "$HOME/.config/cleanmic/update_signing_key" ] || [ -n "${CLEANMIC_UPDATE_SIGNING_KEY:-}" ]; then
+  "$DIST/cleanmic-cli" sign-update "$DMG" --version "$VERSION"
+  echo ""
+  echo "Izdanje:  gh release create v$VERSION \"$DMG\" \"$SIG\" --title \"CleanMic $VERSION\" --notes-file <bilješke>"
+else
+  echo "⚠️  Nema ključa za potpis (cleanmic-cli update-keygen) — ovo izdanje se neće moći instalirati samo."
+fi

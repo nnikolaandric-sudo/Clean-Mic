@@ -118,20 +118,58 @@ struct MenuBarView: View {
                 Label("Nova verzija: CleanMic \(update.version)", systemImage: "arrow.down.circle.fill")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
-                Text("Imaš \(AppVersion.current). Preuzmi DMG, zatvori CleanMic i prevuci novu verziju u Applications.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("Preuzmi") { model.downloadUpdate() }
-                        .buttonStyle(.borderedProminent)
-                    Button("Šta je novo") { model.openUpdatePage() }
-                    Spacer()
-                    Button("Kasnije") { model.postponeUpdate() }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
+                updateBody(update)
+                if model.updatePhase != .installing {
+                    HStack {
+                        Button("Šta je novo") { model.openUpdatePage() }
+                        Spacer()
+                        Button("Kasnije") { model.postponeUpdate() }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                    }
+                    .controlSize(.small)
                 }
-                .controlSize(.small)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func updateBody(_ update: UpdateInfo) -> some View {
+        switch model.updatePhase {
+        case .downloading(let p):
+            ProgressView(value: p)
+            Text("Preuzimam i provjeravam potpis… \(Int(p * 100))%")
+                .font(.caption).foregroundStyle(.secondary)
+        case .ready:
+            if model.isBusyForUpdate {
+                Text("Spremno i provjereno. Instaliram čim završiš snimanje ili izvještaj; ništa se ne prekida.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Spremno, instaliram…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .installing:
+            Text("Instaliram i restartujem CleanMic…").font(.caption).foregroundStyle(.secondary)
+        case .failed(let message):
+            Text(message)
+                .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if model.canSelfInstall {
+                    Button("Pokušaj ponovo") { model.prepareUpdate() }.buttonStyle(.borderedProminent)
+                }
+                Button("Preuzmi ručno") { model.downloadUpdate() }
+            }
+            .controlSize(.small)
+        case .idle:
+            if model.canSelfInstall {
+                Text("Imaš \(AppVersion.current). CleanMic se može sam ažurirati; podešavanja i ključ ostaju.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Ažuriraj sada") { model.prepareUpdate() }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+            } else {
+                Text("Imaš \(AppVersion.current). \(model.selfInstallBlockedReason ?? "") — preuzmi DMG, zatvori CleanMic i prevuci novu verziju u Applications.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Preuzmi") { model.downloadUpdate() }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
             }
         }
     }

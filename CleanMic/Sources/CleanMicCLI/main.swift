@@ -31,6 +31,14 @@ func printUsage() {
       cleanmic-cli models [tekst]                — modeli za izvještaj (ponuđeni, ili pretraga
                                                    svih na OpenRouteru: cleanmic-cli models luna)
       cleanmic-cli check-update [--current X.Y.Z] — da li na GitHubu postoji novija verzija
+      cleanmic-cli update-keygen                 — jednom: napravi ključ za potpisivanje izdanja
+                                                   (~/.config/cleanmic/update_signing_key)
+      cleanmic-cli sign-update <dmg> --version X.Y.Z
+                                                 — potpiši DMG → <dmg>.sig (ide uz izdanje na GitHub)
+      cleanmic-cli apply-update --dmg D --sig S --version X --target /putanja/CleanMic.app
+                            [--current Y] [--pubkey B64] [--no-relaunch]
+                                                 — provjera cijelog toka ažuriranja (potpis, izvlačenje,
+                                                   zamjena) nad proizvoljnom kopijom aplikacije
       cleanmic-cli selftest                      — offline provjere (bez mikrofona i mreže)
       cleanmic-cli test-rings                    — stress test RingBuffer
       cleanmic-cli help
@@ -71,7 +79,8 @@ if args.isEmpty || args.first == "help" || args.first == "--help" || args.first 
 
 /// Flagovi koji uzimaju vrijednost — da ih pozicioni argumenti preskoče.
 let valueFlags: Set<String> = ["--mode", "-m", "--language", "--lang", "-l", "--transcribe-model", "--model",
-                               "--report-model", "--api-key", "--audio", "--device", "--system-audio", "--current"]
+                               "--report-model", "--api-key", "--audio", "--device", "--system-audio", "--current",
+                               "--dmg", "--sig", "--version", "--target", "--pubkey"]
 
 func flagValue(_ names: [String]) -> String? {
     for n in names {
@@ -191,6 +200,16 @@ case "check-update":
         print("❌ \(error)")
         exit(1)
     }
+case "update-keygen":
+    runUpdateKeygen()
+case "sign-update":
+    guard let dmg = positionals().first, let version = flagValue(["--version"]) else {
+        print("❌ sign-update zahtijeva <dmg> --version X.Y.Z")
+        exit(1)
+    }
+    runSignUpdate(dmgPath: dmg, version: version)
+case "apply-update":
+    runApplyUpdate()
 case "selftest":
     runSelfTest()
 case "test-rings":
@@ -201,6 +220,80 @@ default:
     exit(1)
 }
 DebugLog.flush()
+
+// MARK: - Ažuriranje (izdavanje i provjera)
+
+func runUpdateKeygen() {
+    let url = UpdateSigning.privateKeyURL
+    if FileManager.default.fileExists(atPath: url.path) {
+        print("❌ Ključ već postoji: \(url.path)")
+        print("   Neću ga prepisati: bez starog ključa postojeće instalacije ne mogu primati automatska ažuriranja.")
+        exit(1)
+    }
+    let pair = UpdateSigning.generateKeyPair()
+    do {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try pair.privateBase64.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    } catch {
+        print("❌ Ne mogu sačuvati ključ: \(error)")
+        exit(1)
+    }
+    print("✅ Privatni ključ sačuvan: \(url.path) (chmod 600)")
+    print("   NAPRAVI KOPIJU (npr. u password manageru). Bez njega nema novih automatskih ažuriranja.")
+    print("   Javni ključ (ide u UpdateSigning.publicKeyBase64):")
+    print("   \(pair.publicBase64)")
+}
+
+func runSignUpdate(dmgPath: String, version: String) {
+    let dmg = URL(fileURLWithPath: dmgPath)
+    guard FileManager.default.fileExists(atPath: dmg.path) else {
+        print("❌ Nema fajla: \(dmgPath)")
+        exit(1)
+    }
+    let keyText = ProcessInfo.processInfo.environment["CLEANMIC_UPDATE_SIGNING_KEY"]
+        ?? (try? String(contentsOf: UpdateSigning.privateKeyURL, encoding: .utf8))
+    guard let keyText, !keyText.isEmpty else {
+        print("❌ Nema ključa za potpis (\(UpdateSigning.privateKeyURL.path)). Napravi ga: cleanmic-cli update-keygen")
+        exit(1)
+    }
+    do {
+        let signature = try UpdateSigning.sign(dmg: dmg, version: version, privateKeyBase64: keyText)
+        // Odmah provjeri ugrađenim javnim ključem: ako se ne poklapa, aplikacije bi odbile ovo izdanje.
+        try UpdateSigning.verify(dmg: dmg, version: version, signatureBase64: signature)
+        let out = URL(fileURLWithPath: dmgPath + ".sig")
+        try signature.write(to: out, atomically: true, encoding: .utf8)
+        print("✅ Potpisano: \(out.path)")
+    } catch {
+        print("❌ \(error)")
+        print("   (ako piše 'ne poklapa se': ključ nije onaj čiji je javni dio ugrađen u aplikaciju)")
+        exit(1)
+    }
+}
+
+func runApplyUpdate() {
+    guard let dmg = flagValue(["--dmg"]), let sig = flagValue(["--sig"]),
+          let version = flagValue(["--version"]), let target = flagValue(["--target"]) else {
+        print("❌ apply-update zahtijeva --dmg --sig --version --target")
+        exit(1)
+    }
+    func url(_ s: String) -> URL { s.contains("://") ? URL(string: s)! : URL(fileURLWithPath: s) }
+    let current = flagValue(["--current"]) ?? AppVersion.current
+    print("⬇️  Pripremam \(version) → \(target)")
+    do {
+        let staged = try UpdateInstaller.prepare(
+            dmg: url(dmg), signature: url(sig), version: version, currentVersion: current,
+            target: URL(fileURLWithPath: target), bundleID: "com.cleanmic.app",
+            publicKeyBase64: flagValue(["--pubkey"]) ?? UpdateSigning.publicKeyBase64,
+            progress: { p in print(String(format: "   %3.0f%%", p * 100), terminator: "\r"); fflush(stdout) })
+        print("\n✅ Provjereno i pripremljeno: \(staged.stagedApp.path)")
+        try UpdateInstaller.launchSwap(staged, pid: getpid(), relaunch: !hasFlag(["--no-relaunch"]))
+        print("   Zamjena kreće čim se ovaj proces ugasi.")
+    } catch {
+        print("\n❌ \(error)")
+        exit(1)
+    }
+}
 
 // MARK: - Stop / stdin
 

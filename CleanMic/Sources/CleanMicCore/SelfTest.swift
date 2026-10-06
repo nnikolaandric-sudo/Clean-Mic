@@ -288,6 +288,98 @@ public enum SelfTest {
             return (ok, "verzija=\(info?.version ?? "-") dmg=\(info?.downloadURL?.lastPathComponent ?? "-")")
         }
 
+        check("Ažuriranje: potpis — ispravan prolazi, izmijenjen fajl / druga verzija / tuđ ključ ne") {
+            let dmg = dir.appendingPathComponent("fake.dmg")
+            try Data((0..<5000).map { UInt8($0 % 251) }).write(to: dmg)
+            let mine = UpdateSigning.generateKeyPair()
+            let other = UpdateSigning.generateKeyPair()
+            let sig = try UpdateSigning.sign(dmg: dmg, version: "1.5.0", privateKeyBase64: mine.privateBase64)
+            func passes(_ v: String, _ s: String, _ key: String) -> Bool {
+                (try? UpdateSigning.verify(dmg: dmg, version: v, signatureBase64: s, publicKeyBase64: key)) != nil
+            }
+            let good = passes("1.5.0", sig, mine.publicBase64)
+            let wrongVersion = !passes("1.4.0", sig, mine.publicBase64)   // stari DMG ne može glumiti novi
+            let wrongKey = !passes("1.5.0", sig, other.publicBase64)
+            let garbage = !passes("1.5.0", "AAAA", mine.publicBase64)
+            var bytes = try Data(contentsOf: dmg); bytes[100] ^= 0xFF
+            try bytes.write(to: dmg)
+            let tampered = !passes("1.5.0", sig, mine.publicBase64)
+            return (good && wrongVersion && wrongKey && garbage && tampered,
+                    "ok=\(good) drugaVerzija=\(wrongVersion) tuđKljuč=\(wrongKey) smeće=\(garbage) izmijenjen=\(tampered)")
+        }
+
+        check("Ažuriranje: izdanje bez .sig se ne instalira samo; sa .sig da") {
+            func release(_ names: [String]) -> [String: Any] {
+                ["tag_name": "v1.5.0", "html_url": "https://github.com/a/b/releases/tag/v1.5.0",
+                 "assets": names.map { ["name": $0, "browser_download_url": "https://github.com/a/b/releases/download/v1.5.0/\($0)"] }]
+            }
+            let withSig = UpdateChecker.parse(release(["CleanMic-1.5.0.dmg", "CleanMic-1.5.0.dmg.sig"]))
+            let noSig = UpdateChecker.parse(release(["CleanMic-1.5.0.dmg"]))
+            let wrongSig = UpdateChecker.parse(release(["CleanMic-1.5.0.dmg", "Neki-drugi.dmg.sig"]))
+            let ok = withSig?.isSelfInstallable == true && noSig?.isSelfInstallable == false
+                && noSig?.downloadURL != nil && wrongSig?.isSelfInstallable == false
+            return (ok, "sa=\(withSig?.isSelfInstallable ?? false) bez=\(noSig?.isSelfInstallable ?? true) tuđi=\(wrongSig?.isSelfInstallable ?? true)")
+        }
+
+        check("Ažuriranje: zamjena aplikacije — uspjeh, odustajanje bez diranja, vraćanje stare") {
+            let fm = FileManager.default
+            func makeApp(_ at: URL, marker: String) throws {
+                try fm.createDirectory(at: at.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+                try marker.write(to: at.appendingPathComponent("Contents/marker"), atomically: true, encoding: .utf8)
+            }
+            func marker(_ app: URL) -> String? {
+                try? String(contentsOf: app.appendingPathComponent("Contents/marker"), encoding: .utf8)
+            }
+            func waitUntil(_ cond: () -> Bool, seconds: Double = 8) -> Bool {
+                let end = Date().addingTimeInterval(seconds)
+                while Date() < end { if cond() { return true }; Thread.sleep(forTimeInterval: 0.05) }
+                return cond()
+            }
+            func scenario(_ name: String) throws -> (StagedUpdate, URL) {
+                let root = dir.appendingPathComponent("swap-\(name)", isDirectory: true)
+                let target = root.appendingPathComponent("CleanMic.app")
+                let stageDir = root.appendingPathComponent(".CleanMic-update-test", isDirectory: true)
+                let staged = stageDir.appendingPathComponent("CleanMic.app")
+                try makeApp(target, marker: "stara")
+                try makeApp(staged, marker: "nova")
+                return (StagedUpdate(version: "9.9.9", stagedApp: staged, stageDir: stageDir, target: target),
+                        root.appendingPathComponent("update.log"))
+            }
+            func sleeper(_ seconds: String) throws -> Process {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/sleep"); p.arguments = [seconds]
+                try p.run(); return p
+            }
+
+            // 1) uspjeh: čeka da proces izađe, zamijeni, počisti
+            let (s1, log1) = try scenario("uspjeh")
+            let p1 = try sleeper("0.6")
+            try UpdateInstaller.launchSwap(s1, pid: p1.processIdentifier, relaunch: false, waitSeconds: 10, log: log1)
+            let swapped = waitUntil { marker(s1.target) == "nova" && !fm.fileExists(atPath: s1.stageDir.path) }
+            let backupGone = !fm.fileExists(atPath: s1.target.path + ".old-update")
+
+            // 2) proces se ne gasi → ne diramo ništa
+            let (s2, log2) = try scenario("odustajanje")
+            let p2 = try sleeper("30")
+            try UpdateInstaller.launchSwap(s2, pid: p2.processIdentifier, relaunch: false, waitSeconds: 0.6, log: log2)
+            let gaveUp = waitUntil { (try? String(contentsOf: log2, encoding: .utf8))?.contains("odustajem") == true }
+            p2.terminate()
+            let untouched = marker(s2.target) == "stara" && fm.fileExists(atPath: s2.stagedApp.path)
+
+            // 3) premještanje nove ne uspije → vrati staru
+            let (s3, log3) = try scenario("povratak")
+            try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: s3.stageDir.path) // mv iz njega pada
+            let p3 = try sleeper("0.3")
+            try UpdateInstaller.launchSwap(s3, pid: p3.processIdentifier, relaunch: false, waitSeconds: 10, log: log3)
+            let rolledBack = waitUntil { (try? String(contentsOf: log3, encoding: .utf8))?.contains("vraćam staru") == true }
+            _ = waitUntil { marker(s3.target) == "stara" }
+            let restored = marker(s3.target) == "stara"
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: s3.stageDir.path)
+
+            return (swapped && backupGone && gaveUp && untouched && rolledBack && restored,
+                    "zamjena=\(swapped) bezBackupa=\(backupGone) odustajanje=\(gaveUp) netaknuto=\(untouched) povratak=\(rolledBack && restored)")
+        }
+
         return checks
     }
 
