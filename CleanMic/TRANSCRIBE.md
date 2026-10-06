@@ -10,6 +10,16 @@ promijeniti) pravi izvještaj: Sažetak + Ključne tačke + Akcije, pa puni tran
   zaustavlja i čuva. 16-bit WAV 48 kHz mono, oko 350 MB po satu, do ~12 h u
   jednom fajlu. Header fajla se osvježava svakih par sekundi, pa snimak ostaje
   čitljiv i ako aplikacija padne ili se Mac ugasi.
+- **Sastanci sa slušalicama.** Mikrofon čuje samo ono što uđe u sobu. Sa zvučnicima to
+  uključuje i glasove ostalih učesnika, ali sa slušalicama ne — oni idu direktno u uši, pa bi
+  transkript imao samo tebe. Zato CleanMic uz slušalice (Bluetooth, USB, priključak) uz
+  mikrofon snima i ono što računar pušta i miješa ga u isti snimak. Na zvučnicima to ne radi
+  (isti glas bi stigao dvaput, kao jeka). Uživo u prostoriji nema razlike: radi mikrofon.
+  Podešavanja → Opšte → **Zvuk iz računara**: Automatski (default) / Uvijek / Nikad.
+  Traži macOS 14.2+ i jednu dozvolu: **Screen & System Audio Recording**. Prvo podizanje
+  nakon instalacije/ažuriranja traje ~5 s (macOS provjerava dozvolu), zato to aplikacija
+  odradi čim vidi slušalice, prije sastanka. Snima se SVE što računar pušta (i muzika,
+  i zvuk obavijesti), ne samo aplikacija za sastanak.
 - **Promjena mikrofona usred snimanja** (slušalice, AirPods, dock, buđenje iz
   sleepa) ne prekida snimak — capture se sam ponovo podigne.
 - **Snimak duži od 1 h** se ne šalje sam: prvo se traži potvrda, uz procjenu
@@ -75,6 +85,13 @@ Ključ se unosi jednom po Macu — ne putuje sa aplikacijom.
 ./CleanMic/bin/cleanmic-cli models claude          # pretraga svih modela na OpenRouteru
 ./CleanMic/bin/cleanmic-cli report sastanak.transcript.txt --report-model anthropic/claude-haiku-4.5
 
+# Slušalice na glavi, online sastanak: mikrofon + ono što računar pušta (default: auto)
+./CleanMic/bin/cleanmic-cli record-processed sastanak.wav --system-audio auto
+#   --system-audio always   i na zvučnicima      --system-audio never   samo mikrofon
+
+# Provjera da zvuk iz računara stiže (pusti nešto; ispiše nivo i da li je dozvola data):
+./CleanMic/bin/cleanmic-cli record-system 10 /tmp/sistem.wav
+
 # Offline denoise postojećeg WAV-a:
 ./CleanMic/bin/cleanmic-cli process /tmp/raw.wav /tmp/clean.wav --mode balanced
 ```
@@ -101,6 +118,10 @@ brišu se nakon obrade.
 - **Izvještaj nije uspio, transkript jeste:** `⋯` → Ponovo napravi izvještaj,
   ili `cleanmic-cli report <ime>.transcript.txt`.
 - **Provjera builda na novom Macu:** `cleanmic-cli selftest` (offline, 12 provjera).
+- **Online sastanak sa slušalicama, a u transkriptu samo ti:** zvuk iz računara nije stigao.
+  Aplikacija to javi poruku nakon snimanja ("Zvuk iz računara je bio tih…"). Provjeri
+  System Settings → Privacy & Security → **Screen & System Audio Recording** → CleanMic.
+  U logu piše `zvuk iz računara: …` (uključen/isključen, koliko je trebalo da krene).
 - **Prozor se „otvori pa nestane":** pokreni
   `CLEANMIC_DEBUG=1 CleanMic.app/Contents/MacOS/CleanMicApp` — ispisuje
   događaje prozora i aktivacije.
@@ -139,7 +160,8 @@ pokretanju 1.2 prelazi na GPT-6 Luna. Kasniji ručni izbor se ne dira.
 
 ## Privatnost
 
-- Denoise (RNNoise) ostaje 100% lokalno.
+- Denoise (RNNoise) ostaje 100% lokalno. Zvuk iz računara se ne čisti (već je čist) i ne
+  napušta Mac osim kao dio snimka koji ti sam pošalješ na transkripciju.
 - ☁️ **Transkripcija + izvještaj šalju snimak na OpenRouter cloud** — samo kad je
   uključena automatska transkripcija ili kad klikneš Transkribuj
   (`--transcribe` u CLI-ju). Snimak duži od 1 h uvijek prvo pita.

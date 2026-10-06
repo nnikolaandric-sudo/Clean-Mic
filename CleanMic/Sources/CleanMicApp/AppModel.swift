@@ -48,6 +48,10 @@ final class AppModel: ObservableObject {
     @Published var devices: [AudioDevice] = []
     /// nil = sistemski zadani mikrofon (prati System Settings).
     @Published var selectedDeviceUID: String?
+    /// Zvuk iz računara (glasovi ostalih na sastanku): automatski kad su slušalice.
+    @Published var systemAudioMode: SystemAudioMode = .auto
+    /// Gdje trenutno izlazi zvuk — za poruku "slušalice → snimam i zvuk iz računara".
+    @Published var outputRoute: OutputRoute?
     @Published var micPermission = DeviceLister.checkMicrophonePermission()
     @Published var lastRecording: RecordingInfo?
     let meters = LiveMeters()
@@ -99,6 +103,7 @@ final class AppModel: ObservableObject {
     init() {
         selectedMode = CleanMicMode(rawValue: defaults.object(forKey: "mode") as? Int ?? 1) ?? .balanced
         selectedDeviceUID = defaults.string(forKey: "inputDeviceUID")
+        systemAudioMode = defaults.string(forKey: "systemAudioMode").flatMap { SystemAudioMode(rawValue: $0) } ?? .auto
         autoTranscribe = defaults.object(forKey: "autoTranscribe") as? Bool ?? true
         transcribeLanguage = defaults.string(forKey: "transcribeLanguage") ?? "sr"
         // v1.2: default za izvještaj je GPT-6 Luna. Ko je ostao na starom defaultu
@@ -141,6 +146,48 @@ final class AppModel: ObservableObject {
         }
         let perm = DeviceLister.checkMicrophonePermission()
         if perm != micPermission { micPermission = perm }
+        let route = OutputRouteDetector.current()
+        if route != outputRoute { outputRoute = route }
+        primeSystemAudioIfNeeded()
+    }
+
+    // MARK: - Zvuk iz računara
+
+    /// Kratka rečenica o tome šta će se desiti sa zvukom iz računara — za meni i Podešavanja.
+    var systemAudioSummary: String {
+        guard SystemAudioCapture.isSupported else { return "Traži macOS 14.2 ili noviji" }
+        switch systemAudioMode {
+        case .never: return "Isključeno — snima se samo mikrofon"
+        case .always: return "Uvijek se snima i zvuk iz računara"
+        case .auto:
+            guard let route = outputRoute else { return "Nema izlaznog uređaja" }
+            return route.isHeadphones
+                ? "\(route.name): slušalice — snimam i zvuk iz računara"
+                : "\(route.name): zvučnici — mikrofon čuje ostale"
+        }
+    }
+
+    func setSystemAudioMode(_ mode: SystemAudioMode) {
+        systemAudioMode = mode
+        defaults.set(mode.rawValue, forKey: "systemAudioMode")
+        primeSystemAudioIfNeeded()
+    }
+
+    private var systemAudioPrimed = false
+
+    /// Prvo podizanje taba nakon instalacije traje ~5 s i tu macOS traži dozvolu. Radimo ga čim
+    /// vidimo da će zvuk iz računara trebati, a ne tek kad počne sastanak (da se ne izgubi početak).
+    private func primeSystemAudioIfNeeded() {
+        guard !systemAudioPrimed, !isRecording, SystemAudioCapture.isSupported else { return }
+        let wanted: Bool
+        switch systemAudioMode {
+        case .never: wanted = false
+        case .always: wanted = outputRoute != nil
+        case .auto: wanted = outputRoute?.isHeadphones == true
+        }
+        guard wanted else { return }
+        systemAudioPrimed = true
+        SystemAudioCapture.prime()
     }
 
     var defaultDeviceName: String {
@@ -199,7 +246,8 @@ final class AppModel: ObservableObject {
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd_HHmmss"
         let url = saveFolder.appendingPathComponent("CleanMic_\(stamp.string(from: Date()))_\(selectedMode).wav")
-        let newSession = RecordingSession(outputURL: url, mode: selectedMode, deviceID: resolvedDeviceID())
+        let newSession = RecordingSession(outputURL: url, mode: selectedMode, deviceID: resolvedDeviceID(),
+                                          systemAudio: systemAudioMode)
         newSession.onAutoStop = { [weak self] summary in
             Task { @MainActor in self?.recordingFinished(summary) }
         }
@@ -264,6 +312,9 @@ final class AppModel: ObservableObject {
             banner = .warning(message)
         } else if summary.droppedBlocks > 0 {
             banner = .warning("Mac je bio preopterećen — u snimku je \(summary.droppedBlocks) kratkih prekida.")
+        } else if summary.systemAudioUsed, !summary.systemAudioHeard, summary.duration >= 20 {
+            // Slušalice + online sastanak + potpuna tišina iz računara = skoro sigurno nema dozvole.
+            banner = .warning("Zvuk iz računara je bio tih cijelo snimanje, pa u snimku nema ostalih učesnika. Ako je sastanak bio online, dozvoli CleanMic u System Settings → Privacy & Security → Screen & System Audio Recording.")
         }
         if autoTranscribe {
             requestTranscription(info)

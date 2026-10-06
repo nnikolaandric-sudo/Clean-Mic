@@ -185,6 +185,75 @@ public enum SelfTest {
             return (out.count == 480 && vad >= 0 && vad <= 1 && !out.contains(where: { $0.isNaN }), String(format: "vad=%.2f", vad))
         }
 
+        check("Zvuk iz računara: miješa se uz mikrofon, bez rupa, skokova i kašnjenja") {
+            // Mikrofon šuti, iz računara teče ton 1 kHz (amplituda 0.1), oba u realnom vremenu
+            // iz dvije niti sa različitim taktom (mikrofon 480 / računar 512 frameova).
+            let micRing = RingBuffer(capacityFrames: 131_072)
+            let outRing = RingBuffer(capacityFrames: 131_072)
+            let sysRing = RingBuffer(capacityFrames: 65_536)
+            let engine = ProcessingEngine(inputRing: micRing, outputRing: outRing, mode: .light)
+            engine.systemRing = sysRing
+            engine.start()
+
+            let seconds = 3.0
+            let micChunks = Int(seconds * 48000) / 480
+            let sysChunks = Int(seconds * 48000) / 512
+            let silence = [Float](repeating: 0, count: 480)
+            let micThread = Thread {
+                for _ in 0..<micChunks { micRing.write(silence); Thread.sleep(forTimeInterval: 0.01) }
+            }
+            let sysThread = Thread {
+                var phase = 0
+                for _ in 0..<sysChunks {
+                    let chunk = (0..<512).map { Float(0.1 * sin(2 * Double.pi * 1000 * Double($0 + phase) / 48000)) }
+                    sysRing.write(chunk)
+                    phase += 512
+                    Thread.sleep(forTimeInterval: 512.0 / 48000.0)
+                }
+            }
+            micThread.start(); sysThread.start()
+            Thread.sleep(forTimeInterval: seconds + 0.4)
+            engine.stop()
+
+            var out = [Float](repeating: 0, count: outRing.availableRead)
+            _ = outRing.read(into: &out, frames: out.count)
+            // Preskoči prvih 0.5 s (priming) i zadnjih 0.1 s (kraj struje).
+            let body = Array(out.dropFirst(24_000).dropLast(4_800))
+            guard body.count > 48_000 else { return (false, "izlaz prekratak: \(out.count)") }
+            let rms = (body.reduce(0) { $0 + $1 * $1 } / Float(body.count)).squareRoot()
+            let peak = body.map(abs).max() ?? 0
+            var longestGap = 0, gap = 0
+            for v in body { if abs(v) < 1e-5 { gap += 1; longestGap = max(longestGap, gap) } else { gap = 0 } }
+            var maxJump: Float = 0
+            for i in 1..<body.count where abs(body[i]) > 1e-5 && abs(body[i - 1]) > 1e-5 {
+                maxJump = max(maxJump, abs(body[i] - body[i - 1]))
+            }
+            let idealJump: Float = 0.1 * 2 * .pi * 1000 / 48000
+            // Rupe (ponestalo zvuka) i skokovi (odbacivanje viška) smiju biti rijetki, ne stalni.
+            let gapsOK = longestGap < 4_800
+            let ok = abs(rms - 0.0707) < 0.012 && peak < 0.11 && gapsOK && maxJump < idealJump * 1.1
+            return (ok, String(format: "rms=%.4f (0.0707) vrh=%.3f najduža rupa=%d fr skok=%.4f (%.4f)",
+                               rms, peak, longestGap, maxJump, idealJump))
+        }
+
+        check("Zvuk iz računara: zbroj se ograničava na ±1, nema prelijevanja") {
+            var frame: [Float] = [0.9, -0.9, 0.2]
+            ProcessingEngine.mix(&frame, with: [0.9, -0.9, 0.3])
+            return (frame == [1, -1, 0.5], "\(frame)")
+        }
+
+        check("Izlaz: slušalice → snima se zvuk iz računara, zvučnici → ne (auto)") {
+            // Samo logika odluke; uređaje ne diramo.
+            let headset = OutputRoute(deviceID: 1, uid: "a", name: "AirPods", isHeadphones: true)
+            let speakers = OutputRoute(deviceID: 2, uid: "b", name: "MacBook zvučnici", isHeadphones: false)
+            let a = SystemAudioCapture.wants(mode: .auto, route: headset)
+            let b = SystemAudioCapture.wants(mode: .auto, route: speakers)
+            let c = SystemAudioCapture.wants(mode: .always, route: speakers)
+            let d = SystemAudioCapture.wants(mode: .never, route: headset)
+            let e = SystemAudioCapture.wants(mode: .always, route: nil)
+            return (a && !b && c && !d && !e, "auto/slušalice=\(a) auto/zvučnici=\(b) uvijek/zvučnici=\(c) nikad=\(d) uvijek/bez izlaza=\(e)")
+        }
+
         return checks
     }
 

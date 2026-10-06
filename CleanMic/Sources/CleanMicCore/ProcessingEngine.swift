@@ -18,6 +18,26 @@ public final class ProcessingEngine: @unchecked Sendable {
 
     public var onMetrics: ((Double, Float) -> Void)? // (ms, vad)
 
+    /// Zvuk iz računara (glasovi ostalih na sastanku), mono 48 kHz. Miješa se u izlaz
+    /// poslije RNNoise-a — to je već čist zvuk i ne treba ga "čistiti" ponovo.
+    /// Postavlja se prije `start()`.
+    public var systemRing: RingBuffer?
+
+    /// Najviše ovoliko zvuka iz računara smije čekati; više od toga je odmaklo od mikrofona
+    /// (sat računara je malo brži od sata mikrofona) pa se višak odbaci.
+    static let systemMaxLagFrames = 12_000 // 250 ms
+    static let systemTargetLagFrames = 4_800 // 100 ms
+    /// Prije prvog miješanja skupi malo zvuka da jitter ne napravi rupe.
+    static let systemPrimeFrames = 960 // 20 ms
+
+    /// Zbroji zvuk iz računara u frame mikrofona, uz ograničenje na ±1 (nema prelijevanja).
+    static func mix(_ frame: inout [Float], with system: [Float]) {
+        let n = min(frame.count, system.count)
+        for i in 0..<n {
+            frame[i] = max(-1, min(1, frame[i] + system[i]))
+        }
+    }
+
     /// Periodični ispis metrika. Isključeno po defaultu: snimanje sada traje
     /// satima, pa bi ispis svakih 5 s samo punio log.
     public var verbose = false
@@ -61,6 +81,8 @@ public final class ProcessingEngine: @unchecked Sendable {
         var outBuf = [Float](repeating: 0, count: frameSize)
 
         var totalMs: Double = 0
+        var systemBuf = [Float](repeating: 0, count: frameSize)
+        var systemPrimed = false
 
         while running {
             // Wait until enough data
@@ -96,6 +118,29 @@ public final class ProcessingEngine: @unchecked Sendable {
             if ms > 10.0 || outBuf.contains(where: { $0.isNaN }) {
                 // bypass: copy input directly
                 outBuf = inBuf
+            }
+
+            // Zvuk iz računara: takt daje mikrofon, pa ovdje samo uzimamo jedan frame
+            // ako ga ima. Nema ga → u ovom frameu je samo mikrofon (nikad ne čekamo).
+            if let system = systemRing {
+                var available = system.availableRead
+                if available > Self.systemMaxLagFrames {
+                    var drop = available - Self.systemTargetLagFrames
+                    while drop > 0 {
+                        let n = min(drop, frameSize)
+                        guard system.read(into: &systemBuf, frames: n) else { break }
+                        drop -= n
+                    }
+                    available = system.availableRead
+                }
+                if !systemPrimed, available >= Self.systemPrimeFrames { systemPrimed = true }
+                if systemPrimed {
+                    if available >= frameSize, system.read(into: &systemBuf, frames: frameSize) {
+                        Self.mix(&outBuf, with: systemBuf)
+                    } else {
+                        systemPrimed = false // ponestalo — ponovo skupi malo prije miješanja
+                    }
+                }
             }
 
             // Write to output ring

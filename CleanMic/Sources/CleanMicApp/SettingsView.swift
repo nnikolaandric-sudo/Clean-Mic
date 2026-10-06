@@ -33,6 +33,23 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Zvuk iz računara (online sastanci)") {
+                Picker("Snimaj zvuk iz računara", selection: Binding(
+                    get: { model.systemAudioMode },
+                    set: { model.setSystemAudioMode($0) }
+                )) {
+                    ForEach(SystemAudioMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .disabled(model.isRecording || !SystemAudioCapture.isSupported)
+                Text(model.systemAudioSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Sa slušalicama mikrofon ne čuje ostale učesnike, pa bi transkript sadržavao samo tebe. Zato se uz slušalice snima i ono što računar pušta. Na zvučnicima se to ne radi, jer bi isti glas stigao dvaput.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Pokretanje") {
                 Toggle("Pokreni CleanMic pri prijavi na Mac", isOn: Binding(
                     get: { model.launchAtLogin },

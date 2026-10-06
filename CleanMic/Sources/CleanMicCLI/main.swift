@@ -8,9 +8,14 @@ func printUsage() {
     KORIŠTENJE:
       cleanmic-cli list                          — lista input uređaja
       cleanmic-cli record-processed [trajanje] [out.wav] [--mode light|balanced|maximum]
-                            [--device ID] [--transcribe]
+                            [--device ID] [--system-audio auto|always|never] [--transcribe]
                                                  — mic -> RNNoise -> WAV. Bez trajanja snima
                                                    dok ne pritisneš Enter ili Ctrl+C.
+                                                   Uz slušalice (auto) snima i zvuk iz računara,
+                                                   da online sastanak ne ostane bez ostalih učesnika.
+      cleanmic-cli record-system [trajanje] [out.wav]
+                                                 — samo zvuk iz računara (bez mikrofona), za provjeru
+                                                   da snimanje zvuka sistema radi i da je dozvola data
       cleanmic-cli record [trajanje] [out.wav] [--transcribe]
                                                  — isto, ali sirov mikrofon (bez RNNoise)
       cleanmic-cli process <in.wav> <out.wav> [--mode MODE]
@@ -65,7 +70,7 @@ if args.isEmpty || args.first == "help" || args.first == "--help" || args.first 
 
 /// Flagovi koji uzimaju vrijednost — da ih pozicioni argumenti preskoče.
 let valueFlags: Set<String> = ["--mode", "-m", "--language", "--lang", "-l", "--transcribe-model", "--model",
-                               "--report-model", "--api-key", "--audio", "--device"]
+                               "--report-model", "--api-key", "--audio", "--device", "--system-audio"]
 
 func flagValue(_ names: [String]) -> String? {
     for n in names {
@@ -139,8 +144,12 @@ case "record-processed":
     let r = recordArgs(defaultPrefix: "cleanmic_processed")
     let mode = flagValue(["--mode", "-m"]).map(parseMode) ?? .balanced
     let device = flagValue(["--device"]).flatMap { UInt32($0) }
-    runRecordProcessed(seconds: r.seconds, outputPath: r.path, mode: mode, deviceID: device)
+    let systemAudio = flagValue(["--system-audio"]).flatMap { SystemAudioMode(rawValue: $0) } ?? .auto
+    runRecordProcessed(seconds: r.seconds, outputPath: r.path, mode: mode, deviceID: device, systemAudio: systemAudio)
     if hasFlag(["--transcribe"]) { runTranscribeFlow(audioPath: r.path, opts: transcribeOptsFromArgs()) }
+case "record-system":
+    let r = recordArgs(defaultPrefix: "cleanmic_system")
+    runRecordSystem(seconds: r.seconds, outputPath: r.path)
 case "process":
     let p = positionals()
     guard p.count >= 2 else {
@@ -551,12 +560,18 @@ func printRecorded(_ url: URL) {
 }
 
 /// mic -> RNNoise -> WAV, ista putanja koda kao u aplikaciji (RecordingSession).
-func runRecordProcessed(seconds: Double?, outputPath: String, mode: CleanMicMode, deviceID: AudioDeviceID?) {
+func runRecordProcessed(seconds: Double?, outputPath: String, mode: CleanMicMode, deviceID: AudioDeviceID?,
+                        systemAudio: SystemAudioMode) {
     let length = seconds.map { ReportService.humanDuration($0) } ?? "dok se ne zaustavi"
     print("🎙  CleanMic Record + RNNoise (\(mode)) — \(length) -> \(outputPath)")
+    if let route = OutputRouteDetector.current() {
+        let kind = route.isHeadphones ? "slušalice" : "zvučnici"
+        print("   🔈 Izlaz: \(route.name) (\(kind)) — zvuk iz računara: \(systemAudio.title)")
+    }
     ensureMicPermission()
 
-    let session = RecordingSession(outputURL: URL(fileURLWithPath: outputPath), mode: mode, deviceID: deviceID)
+    let session = RecordingSession(outputURL: URL(fileURLWithPath: outputPath), mode: mode, deviceID: deviceID,
+                                   systemAudio: systemAudio)
     do {
         try session.start()
     } catch {
@@ -572,7 +587,57 @@ func runRecordProcessed(seconds: Double?, outputPath: String, mode: CleanMicMode
     let summary = session.stop()
     if let msg = summary.reason.message { print("⚠️  \(msg)") }
     print("   Ispušteno blokova: \(summary.droppedBlocks)  Restart mikrofona: \(summary.captureRestarts)")
+    if summary.systemAudioUsed {
+        print(summary.systemAudioHeard
+              ? "   Zvuk iz računara: snimljen"
+              : "   ⚠️  Zvuk iz računara je bio tih cijelo vrijeme — provjeri dozvolu (System Settings → Privacy & Security → Screen & System Audio Recording)")
+    }
     printRecorded(summary.url)
+}
+
+/// Samo zvuk iz računara -> WAV. Dijagnostika: pusti nešto i vidi da li stiže.
+func runRecordSystem(seconds: Double?, outputPath: String) {
+    guard SystemAudioCapture.isSupported else {
+        print("❌ Snimanje zvuka iz računara traži macOS 14.2 ili noviji.")
+        exit(1)
+    }
+    let length = seconds.map { ReportService.humanDuration($0) } ?? "dok se ne zaustavi"
+    print("🔊  CleanMic zvuk iz računara — \(length) -> \(outputPath)")
+    if let route = OutputRouteDetector.current() {
+        print("   🔈 Izlaz: \(route.name) (\(route.isHeadphones ? "slušalice" : "zvučnici"))")
+    }
+    let writer: StreamingWAVWriter
+    do {
+        writer = try StreamingWAVWriter(url: URL(fileURLWithPath: outputPath), sampleRate: 48000, channels: 1)
+    } catch {
+        print("❌ Writer error: \(error)")
+        exit(1)
+    }
+    let lock = NSLock()
+    var frames = 0
+    let capture = SystemAudioCapture(mode: .always)
+    capture.onNotice = { print("\n   ℹ️  \($0)") }
+    capture.onPCM = { ptr, count in
+        lock.lock()
+        defer { lock.unlock() }
+        try? writer.write(ptr, count: count)
+        frames += count
+    }
+    capture.start()
+    waitWhileRecording(seconds: seconds) { elapsed in
+        lock.lock()
+        let n = frames
+        lock.unlock()
+        return String(format: "%@  %.1f s zvuka  nivo %.3f", clock(elapsed), Double(n) / 48000, capture.takePeak())
+    }
+    capture.stop()
+    lock.lock()
+    writer.close()
+    lock.unlock()
+    print(capture.heardAudio
+          ? "   Zvuk iz računara: snimljen"
+          : "   ⚠️  Nije stigao čujan zvuk. Ako je nešto svirano: dozvola nije data (System Settings → Privacy & Security → Screen & System Audio Recording).")
+    printRecorded(URL(fileURLWithPath: outputPath))
 }
 
 /// Sirov mikrofon -> WAV (bez RNNoise) — za AB poređenje sa record-processed.

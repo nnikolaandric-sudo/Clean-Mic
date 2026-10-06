@@ -40,6 +40,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key>               <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>CleanMic snima sa mikrofona i u realnom vremenu uklanja šum iz tvog glasa.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>CleanMic snima i zvuk iz računara (glasove ostalih na online sastanku) kad nosiš slušalice, da izvještaj ne ostane bez njih.</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>CleanMic čuva snimke, transkripte i izvještaje u folderu Downloads/CleanMic.</string>
     <key>NSDocumentsFolderUsageDescription</key>

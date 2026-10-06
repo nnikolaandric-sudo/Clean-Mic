@@ -141,6 +141,17 @@ struct MenuBarView: View {
                     .disabled(model.isRecording)
                     .help(model.isRecording ? "Mikrofon se bira prije snimanja" : "Sistemski prati izbor u System Settings")
                 }
+                if SystemAudioCapture.isSupported && model.systemAudioMode != .never {
+                    HStack(spacing: 6) {
+                        Image(systemName: "speaker.wave.2").font(.caption).foregroundStyle(.secondary)
+                            .frame(width: 62, alignment: .leading)
+                        Text(model.systemAudioSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
                 HStack {
                     Text("Čišćenje").font(.caption).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
                     Picker("Čišćenje", selection: Binding(

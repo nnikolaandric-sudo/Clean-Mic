@@ -35,6 +35,11 @@ public final class RecordingSession: @unchecked Sendable {
         /// Blokovi sa mikrofona koji nisu stali u ring (rupe u snimku). Treba biti 0.
         public let droppedBlocks: Int
         public let captureRestarts: Int
+        /// Je li se uz mikrofon snimao i zvuk iz računara (slušalice ili mod "uvijek").
+        public let systemAudioUsed: Bool
+        /// Je li u tom zvuku ikad bilo čujnog signala. `systemAudioUsed && !systemAudioHeard`
+        /// na online sastanku znači: nema dozvole za snimanje zvuka sistema (tap tada šuti).
+        public let systemAudioHeard: Bool
     }
 
     public struct Snapshot {
@@ -58,6 +63,9 @@ public final class RecordingSession: @unchecked Sendable {
     private let capture = AudioCapture()
     private let inputRing = RingBuffer(capacityFrames: RecordingSession.ringFrames)
     private let outputRing = RingBuffer(capacityFrames: RecordingSession.ringFrames)
+    private let systemRing = RingBuffer(capacityFrames: 65_536)
+    private let systemAudioMode: SystemAudioMode
+    private var systemCapture: SystemAudioCapture?
     private let engine: ProcessingEngine
     private var writer: StreamingWAVWriter?
 
@@ -80,9 +88,11 @@ public final class RecordingSession: @unchecked Sendable {
     /// Poziva se (sa pozadinske niti) kad se snimanje samo zaustavi.
     public var onAutoStop: ((Summary) -> Void)?
 
-    public init(outputURL: URL, mode: CleanMicMode, deviceID: AudioDeviceID? = nil) {
+    public init(outputURL: URL, mode: CleanMicMode, deviceID: AudioDeviceID? = nil,
+                systemAudio: SystemAudioMode = .auto) {
         self.outputURL = outputURL
         self.deviceID = deviceID
+        self.systemAudioMode = systemAudio
         self.engine = ProcessingEngine(inputRing: inputRing, outputRing: outputRing, mode: mode)
     }
 
@@ -128,6 +138,7 @@ public final class RecordingSession: @unchecked Sendable {
             try? FileManager.default.removeItem(at: outputURL)
             throw error
         }
+        startSystemAudio()
         engine.start()
         locked { running = true }
 
@@ -256,6 +267,7 @@ public final class RecordingSession: @unchecked Sendable {
         }
 
         capture.stop()
+        systemCapture?.stop()
         // Pusti engine da obradi ono što je još u ulaznom ringu.
         let deadline = CFAbsoluteTimeGetCurrent() + 0.4
         while inputRing.availableRead >= Self.frame && CFAbsoluteTimeGetCurrent() < deadline {
@@ -278,11 +290,32 @@ public final class RecordingSession: @unchecked Sendable {
                         bytes: frames * 2 + 44,
                         reason: reason,
                         droppedBlocks: inputRing.overrunCount,
-                        captureRestarts: capture.restartCount)
+                        captureRestarts: capture.restartCount,
+                        systemAudioUsed: systemCapture?.wasEverActive ?? false,
+                        systemAudioHeard: systemCapture?.heardAudio ?? false)
         locked { summary = s }
-        DebugLog.log(String(format: "snimanje stop: %.1f s, %@ MB, ispušteno blokova=%d, restart capture=%d, razlog=%@",
-                            s.duration, Self.megabytes(s.bytes), s.droppedBlocks, s.captureRestarts, "\(reason)"))
+        DebugLog.log(String(format: "snimanje stop: %.1f s, %@ MB, ispušteno blokova=%d, restart capture=%d, zvuk iz računara=%@, razlog=%@",
+                            s.duration, Self.megabytes(s.bytes), s.droppedBlocks, s.captureRestarts,
+                            s.systemAudioUsed ? (s.systemAudioHeard ? "da, čujan" : "da, ali tih") : "ne", "\(reason)"))
         return s
+    }
+
+    // MARK: - Zvuk iz računara
+
+    /// Uz mikrofon snima i ono što računar pušta (glasovi ostalih), kad su slušalice.
+    private func startSystemAudio() {
+        guard systemAudioMode != .never, SystemAudioCapture.isSupported else { return }
+        let system = SystemAudioCapture(mode: systemAudioMode)
+        system.onPCM = { [weak self] ptr, frames in
+            self?.systemRing.write(ptr, frames: frames)
+        }
+        system.onNotice = { [weak self] text in
+            guard let self else { return }
+            self.locked { self.noticeText = text }
+        }
+        engine.systemRing = systemRing
+        systemCapture = system
+        system.start()
     }
 
     // MARK: - Helpers
