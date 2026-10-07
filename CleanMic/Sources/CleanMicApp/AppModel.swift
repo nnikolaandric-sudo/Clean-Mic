@@ -100,7 +100,8 @@ final class AppModel: ObservableObject {
     @Published var launchAtLogin = false
     @Published var saveFolder: URL = AppModel.defaultSaveFolder
 
-    let transcribeModel = OpenRouterConfig.transcribeModelDefault
+    @Published var transcribeModel = OpenRouterConfig.transcribeModelDefault
+    let transcribeModelOptions = OpenRouterConfig.transcribeModelOptions
     let languageOptions: [(code: String, name: String)] = [
         ("auto", "Automatski"), ("sr", "Srpski"), ("hr", "Hrvatski"), ("bs", "Bosanski"), ("en", "Engleski"),
     ]
@@ -128,6 +129,7 @@ final class AppModel: ObservableObject {
         DispatchQueue.global(qos: .utility).async { UpdateInstaller.cleanupLeftovers() }
         autoTranscribe = defaults.object(forKey: "autoTranscribe") as? Bool ?? true
         transcribeLanguage = defaults.string(forKey: "transcribeLanguage") ?? "sr"
+        transcribeModel = OpenRouterConfig.normalizedTranscribeModel(defaults.string(forKey: "transcribeModel"))
         // v1.2: default za izvještaj je GPT-6 Luna. Ko je ostao na starom defaultu
         // prelazi jednom; izbor napravljen poslije toga se poštuje.
         if defaults.integer(forKey: "reportModelMigration") < 2 {
@@ -741,6 +743,11 @@ final class AppModel: ObservableObject {
     func setLanguage(_ code: String) {
         transcribeLanguage = code
         defaults.set(code, forKey: "transcribeLanguage")
+    }
+
+    func setTranscribeModel(_ model: String) {
+        transcribeModel = model
+        defaults.set(model, forKey: "transcribeModel")
     }
 
     func setReportModel(_ model: String) {

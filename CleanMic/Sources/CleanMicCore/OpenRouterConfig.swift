@@ -7,7 +7,32 @@ import Foundation
 ///   3. fajl ~/.config/cleanmic/openrouter_key (GUI ga tu upisuje)
 ///   4. UserDefaults "openrouter_api_key" (GUI)
 public enum OpenRouterConfig {
-    public static let transcribeModelDefault = "microsoft/mai-transcribe-2"
+    public static let transcribeModelDefault = "elevenlabs/scribe-v2"
+    /// Default do promjene modela — može se ručno vratiti kroz Podešavanja.
+    public static let previousTranscribeModelDefault = "microsoft/mai-transcribe-2"
+
+    public struct TranscribeModelOption: Hashable {
+        public let id: String
+        public let name: String
+    }
+
+    /// Modeli ponuđeni u Podešavanjima (prvi je default). Stari model ostaje
+    /// na listi da se korisnik može vratiti na njega.
+    public static let transcribeModelOptions = [
+        TranscribeModelOption(id: "elevenlabs/scribe-v2", name: "ElevenLabs Scribe v2"),
+        TranscribeModelOption(id: "microsoft/mai-transcribe-2", name: "Microsoft MAI Transcribe 2"),
+    ]
+
+    public static func normalizedTranscribeModel(_ model: String?) -> String {
+        guard let m = model?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty else {
+            return transcribeModelDefault
+        }
+        return m
+    }
+
+    public static func transcribeModelName(_ id: String) -> String {
+        transcribeModelOptions.first(where: { $0.id == id })?.name ?? id
+    }
     public struct ReportModelOption: Hashable {
         public let id: String
         public let name: String

@@ -157,7 +157,7 @@ public enum SelfTest {
             let custom = OpenRouterConfig.normalizedReportModel("  neki/novi-model ")
             let empty = OpenRouterConfig.normalizedReportModel("")
             let ok = OpenRouterConfig.reportModelDefault == "openai/gpt-6-luna"
-                && OpenRouterConfig.transcribeModelDefault == "microsoft/mai-transcribe-2"
+                && OpenRouterConfig.transcribeModelDefault == "elevenlabs/scribe-v2"
                 && removed == OpenRouterConfig.reportModelDefault && empty == OpenRouterConfig.reportModelDefault
                 && custom == "neki/novi-model"
                 && OpenRouterConfig.reportModelOptions.first?.id == OpenRouterConfig.reportModelDefault

@@ -1,6 +1,6 @@
 # CleanMic — Snimanje → Transkripcija → Izvještaj
 
-Snimak (očišćen RNNoise-om) ide na OpenRouter **`microsoft/mai-transcribe-2`**
+Snimak (očišćen RNNoise-om) ide na OpenRouter **`elevenlabs/scribe-v2`**
 (transkript), a zatim **`openai/gpt-6-luna`** (GPT-6 Luna, default — može se
 promijeniti) pravi izvještaj: Sažetak + Ključne tačke + Akcije, pa puni transkript.
 
@@ -142,7 +142,7 @@ brišu se nakon obrade.
 
 ## Modeli
 
-**Transkripcija:** `microsoft/mai-transcribe-2`.
+**Transkripcija:** `elevenlabs/scribe-v2`.
 
 **Izvještaj** — bira se u **Podešavanja → Transkript → Model za izvještaj**:
 
@@ -168,7 +168,8 @@ pokretanju 1.2 prelazi na GPT-6 Luna. Kasniji ručni izbor se ne dira.
 
 ## Trošak (izmjereno 05.10.2026)
 
-- `microsoft/mai-transcribe-2`: **$0.10 po satu** audija ($0.0153 za 9 min)
+- `elevenlabs/scribe-v2` (novi default): trošak OpenRouter vraća u `usage.cost`
+- `microsoft/mai-transcribe-2` (prethodni default, može se vratiti u Podešavanjima): ranije izmjereno **$0.10 po satu** audija ($0.0153 za 9 min)
 - `openai/gpt-6-luna`: oko **pola centa** za izvještaj iz transkripta od sat
   vremena (≈21.000 tokena ulaza, ≈5.500 izlaza); kratki snimci ispod desetine centa
 

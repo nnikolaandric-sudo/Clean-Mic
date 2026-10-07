@@ -135,8 +135,15 @@ struct SettingsView: View {
                 LabeledContent("Koristi se") {
                     Text(model.reportModel).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                LabeledContent("Model za transkript") {
-                    Text(model.transcribeModel).foregroundStyle(.secondary)
+                Picker("Model za transkript", selection: Binding(get: { model.transcribeModel },
+                                                                set: { model.setTranscribeModel($0) })) {
+                    ForEach(model.transcribeModelOptions, id: \.id) { option in
+                        Text(option.id == OpenRouterConfig.transcribeModelDefault ? "\(option.name) (preporučeno)" : option.name)
+                            .tag(option.id)
+                    }
+                }
+                LabeledContent("Koristi se za transkript") {
+                    Text(model.transcribeModel).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Text("Snimak duži od 1 sata se ne šalje automatski — prvo se traži potvrda, uz procjenu troška.")
                     .font(.caption)

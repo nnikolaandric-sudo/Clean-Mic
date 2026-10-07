@@ -2,11 +2,11 @@ import Foundation
 import AVFoundation
 
 /// Transkripcija preko OpenRouter /audio/transcriptions.
-/// Default model: microsoft/mai-transcribe-2.
+/// Default model: elevenlabs/scribe-v2.
 ///
 /// API format (JSON, base64):
 ///   POST https://openrouter.ai/api/v1/audio/transcriptions
-///   { "model": "microsoft/mai-transcribe-2",
+///   { "model": "elevenlabs/scribe-v2",
 ///     "input_audio": { "data": "<base64>", "format": "wav" },
 ///     "language": "sr",            // opciono, ISO-639-1
 ///     "response_format": "json" }
